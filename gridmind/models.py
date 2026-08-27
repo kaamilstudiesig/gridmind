@@ -175,7 +175,7 @@ class GridState:
     constraints: ConstraintLimits = field(default_factory=ConstraintLimits)
     available_generation_mw: float = 1.258750
     p_gen_base: float = 1.258750
-    active_transfers: dict[str, float] = field(default_factory=dict)
+    active_transfers: dict[str, Any] = field(default_factory=dict)
     planning_work_orders: list[dict[str, Any]] = field(default_factory=list)
     latest_result: Optional[SimulationResult] = None
     applied_actions: list[Action] = field(default_factory=list)

@@ -276,6 +276,54 @@ class TestEngine(unittest.TestCase):
         self.assertIn("constraint violation", (reason or "").lower())
         self.assertIn("T01", reason or "")
 
+    def test_transfer_feeder_bus_endpoints_respected(self) -> None:
+        """Tests transfer from Feeder-B bus N05 to Feeder-A bus N04 relieves L02 and increases L01."""
+        action = Action(
+            action_type="load_transfer",
+            parameters={"from": "N05", "to": "N04", "line_id": "L08", "transfer_mw": 0.100},
+        )
+        is_valid, reason = self.engine.validate_action(self.state, action)
+        self.assertTrue(is_valid)
+
+        res = self.engine.evaluate_sandbox(self.state, action)
+        self.assertTrue(res.action_valid)
+        self.assertAlmostEqual(res.line_flows_mw["L08"], 0.100, places=5)
+        # L04 carries LZ01 (0.315875), L01 carries 0.315875 + 0.100 = 0.415875 MW
+        self.assertAlmostEqual(res.line_flows_mw["L01"], 0.415875, places=5)
+        # L05 is untouched (0.447875 MW), but incoming feeder line L02 is relieved: (0.447875 + 0.172) - 0.100 = 0.519875 MW
+        self.assertAlmostEqual(res.line_flows_mw["L05"], 0.447875, places=5)
+        self.assertAlmostEqual(res.line_flows_mw["L02"], 0.519875, places=5)
+
+    def test_transfer_unsupported_endpoints_rejected(self) -> None:
+        """Tests that unsupported endpoint combinations for tie-line L08 are rejected."""
+        # Endpoint on Feeder-C (N09)
+        action_c = Action(
+            action_type="load_transfer",
+            parameters={"from": "N09", "to": "N04", "line_id": "L08", "transfer_mw": 0.100},
+        )
+        is_valid_c, reason_c = self.engine.validate_action(self.state, action_c)
+        self.assertFalse(is_valid_c)
+        self.assertIn("unsupported endpoint combination", reason_c or "")
+
+        # Both endpoints on same feeder (N08 to N05)
+        action_same = Action(
+            action_type="load_transfer",
+            parameters={"from": "N08", "to": "N05", "line_id": "L08", "transfer_mw": 0.100},
+        )
+        is_valid_same, reason_same = self.engine.validate_action(self.state, action_same)
+        self.assertFalse(is_valid_same)
+        self.assertIn("same feeder side", reason_same or "")
+
+    def test_transfer_critical_load_zone_rejected(self) -> None:
+        """Tests that attempting to transfer critical hospital load N10 (LZ04) is rejected."""
+        action = Action(
+            action_type="load_transfer",
+            parameters={"from": "N10", "to": "N04", "line_id": "L08", "transfer_mw": 0.050},
+        )
+        is_valid, reason = self.engine.validate_action(self.state, action)
+        self.assertFalse(is_valid)
+        self.assertIn("critical load zone LZ04", reason or "")
+
     def test_planning_replacement_does_not_silently_perform_physical_installation(self) -> None:
         """Tests that executing planning action logs a work order without altering live hardware."""
         t04 = self.state.transformers["T04"]

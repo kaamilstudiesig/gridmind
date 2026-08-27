@@ -68,9 +68,19 @@ class GridMindEngine:
         l08_edge = next((e for e in state.edges.values() if e.line_id == "L08"), None)
         l08_flow = 0.0
 
+        t_src = "N08"
+        t_dst = "N04"
         if l08_edge and l08_edge.status == LineStatus.CLOSED:
             # Transfers parameterized amount from state.active_transfers, or defaults to 0.100 MW
-            l08_flow = state.active_transfers.get("L08", 0.100)
+            t_data = state.active_transfers.get("L08", 0.100)
+            if isinstance(t_data, dict):
+                l08_flow = float(t_data.get("transfer_mw", 0.100))
+                t_src = str(t_data.get("source", "N08"))
+                t_dst = str(t_data.get("destination", "N04"))
+            else:
+                l08_flow = float(t_data)
+                t_src = "N08"
+                t_dst = "N04"
 
         # Check line connectivity to load zones
         # N07 is fed by L04, N08 by L05, N10 by L07, N09 by L06
@@ -85,18 +95,45 @@ class GridMindEngine:
         if line_status_map.get("L06") in (LineStatus.TRIPPED, LineStatus.ISOLATED):
             load_served_mw["LZ03"] = 0.0
 
-        # 3. Calculate Power Flow on Lines
+        # 3. Calculate Power Flow on Lines based on topology and transfer endpoints
         line_flows_mw: dict[str, float] = {}
         line_loadings_pct: dict[str, float] = {}
 
         flow_l04 = load_served_mw.get("LZ01", 0.0)
-        flow_l05 = max(0.0, load_served_mw.get("LZ02", 0.0) - l08_flow)
+        flow_l05 = load_served_mw.get("LZ02", 0.0)
         flow_l07 = load_served_mw.get("LZ04", 0.0)
         flow_l06 = load_served_mw.get("LZ03", 0.0)
 
         flow_l08 = l08_flow if (l08_edge and l08_edge.status == LineStatus.CLOSED) else 0.0
-        flow_l01 = flow_l04 + flow_l08
-        flow_l02 = flow_l05 + flow_l07
+
+        if flow_l08 > 0.0:
+            if t_src in ("N08", "LZ02"):
+                # Transferred specifically from LZ02 at N08 to Feeder-A
+                flow_l05 = max(0.0, flow_l05 - flow_l08)
+                flow_l02 = flow_l05 + flow_l07
+                flow_l01 = flow_l04 + flow_l08
+            elif t_src == "N05":
+                # Transferred from Feeder-B bus N05 to Feeder-A
+                flow_l02 = max(0.0, (flow_l05 + flow_l07) - flow_l08)
+                flow_l01 = flow_l04 + flow_l08
+            elif t_src in ("N07", "LZ01"):
+                # Transferred from Feeder-A LZ01 to Feeder-B
+                flow_l04 = max(0.0, flow_l04 - flow_l08)
+                flow_l01 = flow_l04
+                flow_l02 = flow_l05 + flow_l07 + flow_l08
+            elif t_src == "N04":
+                # Transferred from Feeder-A bus N04 to Feeder-B
+                flow_l01 = max(0.0, flow_l04 - flow_l08)
+                flow_l02 = flow_l05 + flow_l07 + flow_l08
+            else:
+                # Default N08 -> N04
+                flow_l05 = max(0.0, flow_l05 - flow_l08)
+                flow_l02 = flow_l05 + flow_l07
+                flow_l01 = flow_l04 + flow_l08
+        else:
+            flow_l01 = flow_l04
+            flow_l02 = flow_l05 + flow_l07
+
         flow_l03 = flow_l06
 
         line_flows_mw["L01"] = flow_l01
@@ -390,6 +427,27 @@ class GridMindEngine:
                 if source == destination:
                     return False, "Source and destination nodes must be different"
 
+                # Critical load protection
+                if source in ("N10", "LZ04"):
+                    return False, "Load transfer rejected: cannot curtail or transfer critical load zone LZ04 (Hospital-A at N10)"
+
+                # Validate endpoints against network topology for tie-line
+                feeder_b_nodes = {"N05", "N08", "LZ02"}
+                feeder_a_nodes = {"N04", "N07", "LZ01", "N01"}
+                is_b_to_a = source in feeder_b_nodes and destination in feeder_a_nodes
+                is_a_to_b = source in feeder_a_nodes and destination in feeder_b_nodes
+
+                if not (is_b_to_a or is_a_to_b):
+                    if (source in feeder_b_nodes and destination in feeder_b_nodes) or (source in feeder_a_nodes and destination in feeder_a_nodes):
+                        return (
+                            False,
+                            f"Load transfer rejected: source '{source}' and destination '{destination}' are on the same feeder side of tie-line {line_id}",
+                        )
+                    return (
+                        False,
+                        f"Load transfer rejected: unsupported endpoint combination '{source}' -> '{destination}' for tie-line {line_id}. Tie-line {line_id} connects Feeder-A ({line_edge.from_node}) and Feeder-B ({line_edge.to_node}).",
+                    )
+
                 raw_mw = action.parameters.get(
                     "transfer_mw",
                     action.parameters.get("mw", action.parameters.get("amount_mw")),
@@ -614,10 +672,25 @@ class GridMindEngine:
                 action.parameters.get("mw", action.parameters.get("amount_mw", 0.100)),
             )
             transfer_mw = float(raw_mw)
+            source = (
+                action.parameters.get("source")
+                or action.parameters.get("from")
+                or action.parameters.get("from_node", "N08")
+            )
+            destination = (
+                action.parameters.get("destination")
+                or action.parameters.get("to")
+                or action.parameters.get("to_node", "N04")
+            )
             l08 = next((e for e in state.edges.values() if e.line_id == line_id), None)
             if l08:
                 l08.status = LineStatus.CLOSED
-                state.active_transfers[line_id] = transfer_mw
+                state.active_transfers[line_id] = {
+                    "transfer_mw": transfer_mw,
+                    "source": str(source),
+                    "destination": str(destination),
+                    "line_id": str(line_id),
+                }
 
         elif atype == "isolate_transformer":
             t_id = action.parameters.get("transformer_id") or action.parameters.get("target")
