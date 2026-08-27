@@ -341,6 +341,36 @@ class TestMCPServer(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(data["is_stable"])
                 self.assertAlmostEqual(data["frequency_hz"], 50.0000, places=3)
 
+    async def test_17_load_scenario_unsupported_id_error(self) -> None:
+        """Tests that loading an unsupported scenario ID returns structured error without corrupting active state."""
+        await self._call_tool_json("load_scenario", {"scenario_id": "SC01"})
+        res = await self._call_tool_json("load_scenario", {"scenario_id": "NON_EXISTENT_SCENARIO"})
+        self.assertFalse(res.get("success", True))
+        self.assertIn("Unsupported scenario ID", res.get("error", ""))
+        self.assertEqual(res.get("scenario_id"), "SC01")
+
+        # Verify active incident state is still SC01
+        inc = await self._call_tool_json("get_incident_state", {})
+        self.assertEqual(inc["scenario_id"], "SC01")
+        self.assertFalse(inc["is_stable"])
+
+    async def test_18_rejection_critical_service_not_fabricated(self) -> None:
+        """Tests that MCP validation rejection reports actual simulator critical service instead of fabricating 100%."""
+        await self._call_tool_json("load_scenario", {"scenario_id": "SC01"})
+        # Call evaluate_action with malformed parameters
+        res = await self._call_tool_json(
+            "evaluate_action",
+            {
+                "action_type": "load_restriction",
+                "parameters": {"invalid_key": 123},
+            },
+        )
+        self.assertFalse(res["action_valid"])
+        crit_svc = res["critical_load_service_pct"]
+        # Must report actual simulator critical load zones (LZ04 for hospital), not a fabricated dict mapping all zones to 100%
+        self.assertIn("LZ04", crit_svc)
+        self.assertEqual(crit_svc["LZ04"], 100.0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -33,6 +33,9 @@ from gridmind.models import (
 )
 
 
+SUPPORTED_SCENARIOS = frozenset({"SC01", "BASE"})
+
+
 class GridMindService:
     """
     Stateful service wrapper providing a clean, typed contract for MCP tools,
@@ -50,12 +53,19 @@ class GridMindService:
         self.state: GridState = load_curated_grid(self.data_dir)
         self.engine.solve(self.state)
         self.active_scenario_id: str = "BASE"
+        self.last_simulation_result: Optional[SimulationResult] = self.state.latest_result
 
     def load_scenario(self, scenario_id: str = "SC01") -> IncidentStateResponse:
         """
         Initializes or resets the simulator to a specific scenario state.
         For SC01: applies heatwave environment, trips L08, and spikes N08.
+        Rejects unsupported scenario IDs before mutating live state.
         """
+        if scenario_id not in SUPPORTED_SCENARIOS:
+            raise ValueError(
+                f"Unsupported scenario ID '{scenario_id}'. Supported scenarios: {sorted(SUPPORTED_SCENARIOS)}"
+            )
+
         self.state = load_curated_grid(self.data_dir)
         self.active_scenario_id = scenario_id
 
@@ -86,6 +96,7 @@ class GridMindService:
             )
 
         self.engine.solve(self.state)
+        self.last_simulation_result = self.state.latest_result
         return self.get_incident_state()
 
     def get_grid_state(self) -> GridStateResponse:
@@ -238,6 +249,7 @@ class GridMindService:
         )
 
         res: SimulationResult = self.engine.evaluate_sandbox(self.state, action)
+        self.last_simulation_result = res
 
         violations = [
             ViolationDTO(
@@ -317,6 +329,7 @@ class GridMindService:
         # Apply to live state
         self.engine.apply_action(self.state, action)
         res = self.state.latest_result or self.engine.solve(self.state)
+        self.last_simulation_result = res
 
         violations = [
             ViolationDTO(
@@ -345,7 +358,7 @@ class GridMindService:
 
     def get_last_simulation_result(self) -> Optional[EvaluationResponse]:
         """Returns the most recent simulation evaluation result."""
-        res = self.state.latest_result
+        res = self.last_simulation_result or self.state.latest_result
         if not res:
             return None
 

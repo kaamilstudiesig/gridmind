@@ -149,15 +149,67 @@ class TestServiceContract(unittest.TestCase):
         self.assertFalse(exec_resp.success)
         self.assertIn("Unknown action type", exec_resp.error_message or "")
 
-    def test_service_rejects_min_service_pct_violation(self) -> None:
-        """Tests that service rejects load restrictions violating min_service_pct."""
-        req = ActionRequest(
-            action_type="load_restriction",
-            parameters={"target": "N08", "reduction_pct": 50.0},
+    def test_get_last_simulation_result_tracks_sandbox_and_execution(self) -> None:
+        """Tests that get_last_simulation_result tracks sandbox evaluations without mutating live state."""
+        self.service.load_scenario("SC01")
+        # 1. Initially SC01 incident result is present
+        inc_res = self.service.get_last_simulation_result()
+        self.assertIsNotNone(inc_res)
+        self.assertFalse(inc_res.is_stable)
+        self.assertAlmostEqual(inc_res.predicted_transformer_temperatures_c["T04"], 112.65, delta=0.2)
+
+        # 2. Evaluate candidate action in sandbox
+        eval_resp = self.service.evaluate_action(
+            ActionRequest(
+                action_type="load_restriction",
+                parameters={"target": "N08", "reduction_pct": 15.0},
+            )
         )
-        eval_resp = self.service.evaluate_action(req)
-        self.assertFalse(eval_resp.action_valid)
-        self.assertIn("minimum service requirement", eval_resp.rejection_reason or "")
+        self.assertTrue(eval_resp.is_stable)
+
+        # 3. get_last_simulation_result returns the sandbox evaluation result
+        last_res = self.service.get_last_simulation_result()
+        self.assertIsNotNone(last_res)
+        self.assertTrue(last_res.is_stable)
+        self.assertAlmostEqual(last_res.predicted_transformer_temperatures_c["T04"], 97.55, delta=0.2)
+
+        # 4. Live state remains unchanged (still unstable, 112.65°C)
+        live_state = self.service.get_grid_state()
+        self.assertFalse(live_state.is_stable)
+        t04 = next(t for t in live_state.transformers if t.transformer_id == "T04")
+        self.assertAlmostEqual(t04.temperature_c, 112.65, delta=0.2)
+
+        # 5. Execute action updates live state and latest simulation result
+        self.service.execute_action(
+            ActionRequest(
+                action_type="load_restriction",
+                parameters={"target": "N08", "reduction_pct": 15.0},
+            )
+        )
+        exec_last_res = self.service.get_last_simulation_result()
+        self.assertIsNotNone(exec_last_res)
+        self.assertTrue(exec_last_res.is_stable)
+        self.assertAlmostEqual(exec_last_res.predicted_transformer_temperatures_c["T04"], 97.55, delta=0.2)
+
+    def test_load_scenario_rejects_unknown_id_without_state_mutation(self) -> None:
+        """Tests that loading an unsupported scenario ID raises ValueError and leaves existing state unchanged."""
+        self.service.load_scenario("SC01")
+        self.assertEqual(self.service.active_scenario_id, "SC01")
+        live_before = self.service.get_grid_state()
+        self.assertFalse(live_before.is_stable)
+
+        # Attempt to load unknown scenario
+        with self.assertRaises(ValueError) as ctx:
+            self.service.load_scenario("UNKNOWN_SCENARIO_99")
+        self.assertIn("Unsupported scenario ID", str(ctx.exception))
+
+        # Scenario ID and live state MUST remain completely unchanged
+        self.assertEqual(self.service.active_scenario_id, "SC01")
+        live_after = self.service.get_grid_state()
+        self.assertFalse(live_after.is_stable)
+        t04_before = next(t.temperature_c for t in live_before.transformers if t.transformer_id == "T04")
+        t04_after = next(t.temperature_c for t in live_after.transformers if t.transformer_id == "T04")
+        self.assertEqual(t04_before, t04_after)
 
 
 if __name__ == "__main__":

@@ -244,6 +244,7 @@ class GridMindMCPServer:
             )
             if not is_valid:
                 cur_state = service.get_grid_state()
+                sim_res = service.state.latest_result or service.engine.solve(service.state)
                 return {
                     "action_valid": False,
                     "rejection_reason": err,
@@ -265,9 +266,7 @@ class GridMindMCPServer:
                     "predicted_transformer_temperatures_c": {
                         t.transformer_id: t.temperature_c for t in cur_state.transformers
                     },
-                    "critical_load_service_pct": {
-                        lz.load_id: 100.0 for lz in cur_state.load_zones
-                    },
+                    "critical_load_service_pct": dict(sim_res.critical_load_service_pct),
                     "summary": f"Action evaluation rejected: {err}",
                 }
 
@@ -296,6 +295,7 @@ class GridMindMCPServer:
             )
             if not is_valid:
                 cur_state = service.get_grid_state()
+                sim_res = service.state.latest_result or service.engine.solve(service.state)
                 return {
                     "success": False,
                     "action_applied": action_type,
@@ -317,9 +317,7 @@ class GridMindMCPServer:
                     "transformer_temperatures_c": {
                         t.transformer_id: t.temperature_c for t in cur_state.transformers
                     },
-                    "critical_load_service_pct": {
-                        lz.load_id: 100.0 for lz in cur_state.load_zones
-                    },
+                    "critical_load_service_pct": dict(sim_res.critical_load_service_pct),
                     "summary": f"Action execution rejected: {err}",
                     "error_message": err,
                 }
@@ -355,8 +353,15 @@ class GridMindMCPServer:
                 description="Scenario ID to load (e.g. 'SC01')",
             ),
         ) -> dict[str, Any]:
-            resp = service.load_scenario(scenario_id)
-            return resp.to_dict()
+            try:
+                resp = service.load_scenario(scenario_id)
+                return resp.to_dict()
+            except ValueError as err:
+                return {
+                    "error": str(err),
+                    "success": False,
+                    "scenario_id": service.active_scenario_id,
+                }
 
 
 def create_mcp_server(

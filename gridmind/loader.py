@@ -1,11 +1,8 @@
-"""
-Data loader for synthetic grid assets and scenario definitions.
-"""
-
 import csv
+import importlib.resources as pkg_resources
 import json
 from pathlib import Path
-from typing import Any, Union
+from typing import Any, Optional, Union
 
 from gridmind.models import (
     ConstraintLimits,
@@ -43,13 +40,57 @@ DISTRIBUTION_LINE_CAPACITIES_MW: dict[str, float] = {
 }
 
 
-def load_curated_grid(data_dir: Union[str, Path] = "gridmind_data/curated") -> GridState:
+def resolve_curated_data_dir(data_dir: Optional[Union[str, Path]] = None) -> Path:
+    """
+    Resolves the directory containing curated grid data files.
+    Precedence:
+    1. Explicit non-empty data_dir (if valid directory containing synthetic_grid_nodes.csv)
+    2. Local workspace directory ('gridmind_data/curated')
+    3. Package directory relative to installed gridmind package
+    4. importlib.resources package resolution
+    """
+    if data_dir is not None:
+        p = Path(data_dir)
+        if p.is_dir() and (p / "synthetic_grid_nodes.csv").is_file():
+            return p
+
+    # Local workspace
+    local = Path("gridmind_data/curated")
+    if local.is_dir() and (local / "synthetic_grid_nodes.csv").is_file():
+        return local
+
+    # Package root relative directory
+    pkg_rel = Path(__file__).resolve().parent.parent / "gridmind_data" / "curated"
+    if pkg_rel.is_dir() and (pkg_rel / "synthetic_grid_nodes.csv").is_file():
+        return pkg_rel
+
+    # Try importlib.resources
+    try:
+        files_ref = pkg_resources.files("gridmind_data.curated")
+        p = Path(str(files_ref))
+        if p.is_dir() and (p / "synthetic_grid_nodes.csv").is_file():
+            return p
+    except Exception:
+        pass
+
+    try:
+        files_ref = pkg_resources.files("gridmind")
+        p = Path(str(files_ref.parent / "gridmind_data" / "curated"))
+        if p.is_dir() and (p / "synthetic_grid_nodes.csv").is_file():
+            return p
+    except Exception:
+        pass
+
+    return local
+
+
+def load_curated_grid(data_dir: Optional[Union[str, Path]] = None) -> GridState:
     """
     Loads grid topology, equipment metadata, and baseline conditions from CSV files.
     
     Treats CSV values as initial metadata and populates a fresh GridState.
     """
-    path = Path(data_dir)
+    path = resolve_curated_data_dir(data_dir)
     state = GridState()
 
     # 1. Load Nodes
@@ -184,7 +225,23 @@ def load_curated_grid(data_dir: Union[str, Path] = "gridmind_data/curated") -> G
     return state
 
 
-def load_scenario(scenario_path: Union[str, Path]) -> dict[str, Any]:
-    """Loads scenario definition JSON."""
-    with open(scenario_path, mode="r", encoding="utf-8") as f:
+def load_scenario(
+    scenario_path_or_id: Union[str, Path],
+    data_dir: Optional[Union[str, Path]] = None,
+) -> dict[str, Any]:
+    """Loads scenario definition JSON by path or scenario ID (e.g. 'SC01')."""
+    p = Path(scenario_path_or_id)
+    if not p.is_file():
+        # Try resolving inside curated data dir
+        curated_dir = resolve_curated_data_dir(data_dir)
+        candidates = [
+            curated_dir / str(scenario_path_or_id),
+            curated_dir / f"seed_scenario_{scenario_path_or_id}.json",
+            curated_dir / f"{scenario_path_or_id}.json",
+        ]
+        for c in candidates:
+            if c.is_file():
+                p = c
+                break
+    with open(p, mode="r", encoding="utf-8") as f:
         return json.load(f)

@@ -27,7 +27,11 @@ build-backend = "setuptools.build_meta"
 where = ["."]
 include = ["agent*", "core*", "dashboard*", "gridmind*"]
 
+[tool.setuptools.package-data]
+"*" = ["*.csv", "*.json"]
+
 [tool.ruff]
 line-length = 88
 target-version = "py311"
+
 

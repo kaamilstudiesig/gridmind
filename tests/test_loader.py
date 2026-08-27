@@ -73,6 +73,20 @@ class TestLoader(unittest.TestCase):
         self.assertIn("hard_constraints", scenario)
         self.assertIn("action_space", scenario)
 
+    def test_default_data_resolution(self) -> None:
+        """Tests that load_curated_grid without explicit path resolves default curated data."""
+        default_state = load_curated_grid(None)
+        self.assertEqual(len(default_state.nodes), 10)
+        self.assertEqual(len(default_state.edges), 8)
+        self.assertEqual(len(default_state.transformers), 5)
+        self.assertEqual(len(default_state.load_zones), 4)
+
+    def test_scenario_by_id_resolution(self) -> None:
+        """Tests that load_scenario resolves scenario JSON by simple ID."""
+        scenario = load_scenario("SC01")
+        self.assertEqual(scenario["scenario_id"], "SC01")
+        self.assertIn("environment", scenario)
+
 
 if __name__ == "__main__":
     unittest.main()

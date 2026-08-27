@@ -209,16 +209,22 @@ class GridMindEngine:
             elif t05.status == TransformerStatus.ISOLATED:
                 t05_load = 0.0
                 t01_load = (n04_total_kva / t01.rating_kva) * 100.0
-            else:
+            elif t01.rating_kva == 250.0 and t05.rating_kva == 250.0:
+                # Nominal baseline proportions
                 t01_load = 72.0 * ratio_n04
                 t05_load = 61.0 * ratio_n04
+            else:
+                # Dynamic capacity-proportional sharing across active bank units
+                total_bank_n04_kva = t01.rating_kva + t05.rating_kva
+                t01_load = (n04_total_kva / total_bank_n04_kva) * 100.0
+                t05_load = (n04_total_kva / total_bank_n04_kva) * 100.0
 
             transformer_loadings_pct["T01"] = t01_load
             transformer_loadings_pct["T05"] = t05_load
             t01.load_pct = t01_load
             t05.load_pct = t05_load
 
-        # Feeder N05 Bank: T02 (500 kVA), T04 (250 kVA / 500 kVA)
+        # Feeder N05 Bank: T02 (500 kVA), T04 (250 kVA baseline)
         p_n05 = flow_l02
         base_n05 = state.load_zones["LZ02"].base_mw + state.load_zones["LZ04"].base_mw
         ratio_n05 = (p_n05 / base_n05) if base_n05 > 0 else 1.0
@@ -233,20 +239,21 @@ class GridMindEngine:
                 t04_load = 0.0
             elif t04.status == TransformerStatus.ISOLATED:
                 t04_load = 0.0
-                # All N05 load shifts to T02 (500 kVA)
+                # All N05 load shifts to T02
                 t02_load = (n05_total_kva / t02.rating_kva) * 100.0
             elif t02.status == TransformerStatus.ISOLATED:
                 t02_load = 0.0
-                # All N05 load shifts to T04 (250 kVA / 500 kVA)
+                # All N05 load shifts to T04
                 t04_load = (n05_total_kva / t04.rating_kva) * 100.0
-            elif t04.rating_kva == 500.0:
-                # Uprated bank: 500 kVA + 500 kVA = 1000 kVA total
-                t02_load = (n05_total_kva / 1000.0) * 100.0
-                t04_load = (n05_total_kva / 1000.0) * 100.0
-            else:
-                # Normal baseline proportions
+            elif t02.rating_kva == 500.0 and t04.rating_kva == 250.0:
+                # Nominal baseline proportions
                 t02_load = 84.0 * ratio_n05
                 t04_load = 93.0 * ratio_n05
+            else:
+                # Dynamic capacity-proportional sharing across active bank units
+                total_bank_n05_kva = t02.rating_kva + t04.rating_kva
+                t02_load = (n05_total_kva / total_bank_n05_kva) * 100.0
+                t04_load = (n05_total_kva / total_bank_n05_kva) * 100.0
 
             transformer_loadings_pct["T02"] = t02_load
             transformer_loadings_pct["T04"] = t04_load
@@ -257,13 +264,16 @@ class GridMindEngine:
         p_n06 = flow_l03
         base_n06 = state.load_zones["LZ03"].base_mw
         ratio_n06 = (p_n06 / base_n06) if base_n06 > 0 else 1.0
+        n06_total_kva = (p_n06 / self.power_factor) * 1000.0
 
         t03 = state.transformers.get("T03")
         if t03:
             if t03.status == TransformerStatus.ISOLATED:
                 t03_load = 0.0
-            else:
+            elif t03.rating_kva == 500.0:
                 t03_load = 68.0 * ratio_n06
+            else:
+                t03_load = (n06_total_kva / t03.rating_kva) * 100.0
             transformer_loadings_pct["T03"] = t03_load
             t03.load_pct = t03_load
 
@@ -430,8 +440,26 @@ class GridMindEngine:
             if not line_edge:
                 return False, f"Line '{line_id}' does not exist in network topology"
 
-            if line_edge.status in (LineStatus.TRIPPED, LineStatus.ISOLATED):
-                return False, f"Cannot transfer load: Emergency tie-line {line_id} is tripped/locked out"
+            if atype == "close_tie_line":
+                if not line_edge.is_tie_line:
+                    return (
+                        False,
+                        f"Line '{line_id}' is not a tie-line. Action 'close_tie_line' is only valid for tie-lines.",
+                    )
+                if line_edge.status in (LineStatus.TRIPPED, LineStatus.ISOLATED):
+                    return (
+                        False,
+                        f"Cannot close tie-line: Emergency tie-line {line_id} is tripped/locked out",
+                    )
+                if line_edge.status == LineStatus.CLOSED:
+                    return False, f"Tie-line {line_id} is already closed"
+
+            elif atype == "load_transfer":
+                if line_edge.status in (LineStatus.TRIPPED, LineStatus.ISOLATED):
+                    return (
+                        False,
+                        f"Cannot transfer load: Emergency tie-line {line_id} is tripped/locked out",
+                    )
 
             if atype == "load_transfer":
                 source = (

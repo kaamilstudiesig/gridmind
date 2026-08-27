@@ -473,6 +473,92 @@ class TestEngine(unittest.TestCase):
         updated_state = self.engine.apply_action(self.state, action)
         self.assertEqual(updated_state.transformers["T04"].status, TransformerStatus.ISOLATED)
 
+    def test_transformer_replacement_rating_variations(self) -> None:
+        """Tests that transformer replacement accurately derives resulting bank capacity across various additional_kva values."""
+        # Baseline total N05 kVA = (0.619875 MW / 0.95) * 1000 = 652.5 kVA
+        # 1. +100 kVA -> T04 becomes 350 kVA, bank total = 850 kVA
+        act_100 = Action(
+            action_type="transformer_replacement",
+            parameters={"transformer_id": "T04", "additional_kva": 100.0},
+        )
+        res_100 = self.engine.evaluate_sandbox(self.state, act_100)
+        self.assertTrue(res_100.action_valid)
+        expected_loading_100 = (652.5 / 850.0) * 100.0  # ~76.76%
+        self.assertAlmostEqual(res_100.transformer_loadings_pct["T02"], expected_loading_100, places=3)
+        self.assertAlmostEqual(res_100.transformer_loadings_pct["T04"], expected_loading_100, places=3)
+
+        # 2. +250 kVA -> T04 becomes 500 kVA, bank total = 1000 kVA
+        act_250 = Action(
+            action_type="transformer_replacement",
+            parameters={"transformer_id": "T04", "additional_kva": 250.0},
+        )
+        res_250 = self.engine.evaluate_sandbox(self.state, act_250)
+        self.assertTrue(res_250.action_valid)
+        expected_loading_250 = (652.5 / 1000.0) * 100.0  # 65.25%
+        self.assertAlmostEqual(res_250.transformer_loadings_pct["T02"], expected_loading_250, places=3)
+        self.assertAlmostEqual(res_250.transformer_loadings_pct["T04"], expected_loading_250, places=3)
+
+        # 3. +500 kVA -> T04 becomes 750 kVA, bank total = 1250 kVA
+        act_500 = Action(
+            action_type="transformer_replacement",
+            parameters={"transformer_id": "T04", "additional_kva": 500.0},
+        )
+        res_500 = self.engine.evaluate_sandbox(self.state, act_500)
+        self.assertTrue(res_500.action_valid)
+        expected_loading_500 = (652.5 / 1250.0) * 100.0  # 52.2%
+        self.assertAlmostEqual(res_500.transformer_loadings_pct["T02"], expected_loading_500, places=3)
+        self.assertAlmostEqual(res_500.transformer_loadings_pct["T04"], expected_loading_500, places=3)
+
+        # 4. Verify live execution logs work order and leaves physical ratings untouched
+        self.assertEqual(self.state.transformers["T04"].rating_kva, 250.0)
+        live_state = self.engine.apply_action(self.state, act_250)
+        self.assertEqual(live_state.transformers["T04"].rating_kva, 250.0)
+        self.assertEqual(len(live_state.planning_work_orders), 1)
+        self.assertEqual(live_state.planning_work_orders[0]["additional_kva"], 250.0)
+
+    def test_close_tie_line_validation_and_execution(self) -> None:
+        """Tests close_tie_line rules: healthy L08 succeeds, non-tie lines rejected, tripped L08 rejected."""
+        # 1. Close healthy open L08
+        self.state.edges["E08"].status = LineStatus.OPEN
+        act_healthy = Action(
+            action_type="close_tie_line",
+            parameters={"line_id": "L08", "transfer_mw": 0.100},
+        )
+        is_val, reason = self.engine.validate_action(self.state, act_healthy)
+        self.assertTrue(is_val)
+
+        res_close = self.engine.evaluate_sandbox(self.state, act_healthy)
+        self.assertTrue(res_close.action_valid)
+        self.assertEqual(res_close.line_flows_mw["L08"], 0.100)
+
+        # 2. Close non-tie line L01 -> reject
+        act_l01 = Action(
+            action_type="close_tie_line",
+            parameters={"line_id": "L01"},
+        )
+        is_val_l01, reason_l01 = self.engine.validate_action(self.state, act_l01)
+        self.assertFalse(is_val_l01)
+        self.assertIn("not a tie-line", reason_l01 or "")
+
+        # 3. Close non-tie line L05 -> reject
+        act_l05 = Action(
+            action_type="close_tie_line",
+            parameters={"line_id": "L05"},
+        )
+        is_val_l05, reason_l05 = self.engine.validate_action(self.state, act_l05)
+        self.assertFalse(is_val_l05)
+        self.assertIn("not a tie-line", reason_l05 or "")
+
+        # 4. Close tripped L08 -> reject
+        self.state.edges["E08"].status = LineStatus.TRIPPED
+        act_tripped = Action(
+            action_type="close_tie_line",
+            parameters={"line_id": "L08"},
+        )
+        is_val_trip, reason_trip = self.engine.validate_action(self.state, act_tripped)
+        self.assertFalse(is_val_trip)
+        self.assertIn("tripped/locked out", reason_trip or "")
+
 
 if __name__ == "__main__":
     unittest.main()
