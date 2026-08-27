@@ -82,6 +82,24 @@ class GridMindEngine:
                 t_src = "N08"
                 t_dst = "N04"
 
+        # Check transformer bank availability for each feeder bus:
+        # N04 is served by {T01, T05}, N05 by {T02, T04}, N06 by {T03}
+        t01_status = state.transformers.get("T01").status if "T01" in state.transformers else TransformerStatus.NORMAL
+        t05_status = state.transformers.get("T05").status if "T05" in state.transformers else TransformerStatus.NORMAL
+        t02_status = state.transformers.get("T02").status if "T02" in state.transformers else TransformerStatus.NORMAL
+        t04_status = state.transformers.get("T04").status if "T04" in state.transformers else TransformerStatus.NORMAL
+        t03_status = state.transformers.get("T03").status if "T03" in state.transformers else TransformerStatus.NORMAL
+
+        if t01_status == TransformerStatus.ISOLATED and t05_status == TransformerStatus.ISOLATED:
+            load_served_mw["LZ01"] = 0.0
+
+        if t02_status == TransformerStatus.ISOLATED and t04_status == TransformerStatus.ISOLATED:
+            load_served_mw["LZ02"] = 0.0
+            load_served_mw["LZ04"] = 0.0
+
+        if t03_status == TransformerStatus.ISOLATED:
+            load_served_mw["LZ03"] = 0.0
+
         # Check line connectivity to load zones
         # N07 is fed by L04, N08 by L05, N10 by L07, N09 by L06
         line_status_map = {e.line_id: e.status for e in state.edges.values()}
@@ -177,42 +195,49 @@ class GridMindEngine:
         p_n04 = flow_l01
         base_n04 = state.load_zones["LZ01"].base_mw
         ratio_n04 = (p_n04 / base_n04) if base_n04 > 0 else 1.0
+        n04_total_kva = (p_n04 / self.power_factor) * 1000.0
 
         t01 = state.transformers.get("T01")
         t05 = state.transformers.get("T05")
-        if t01:
-            if t01.status == TransformerStatus.ISOLATED:
+        if t01 and t05:
+            if t01.status == TransformerStatus.ISOLATED and t05.status == TransformerStatus.ISOLATED:
                 t01_load = 0.0
+                t05_load = 0.0
+            elif t01.status == TransformerStatus.ISOLATED:
+                t01_load = 0.0
+                t05_load = (n04_total_kva / t05.rating_kva) * 100.0
+            elif t05.status == TransformerStatus.ISOLATED:
+                t05_load = 0.0
+                t01_load = (n04_total_kva / t01.rating_kva) * 100.0
             else:
                 t01_load = 72.0 * ratio_n04
-            transformer_loadings_pct["T01"] = t01_load
-            t01.load_pct = t01_load
-
-        if t05:
-            if t05.status == TransformerStatus.ISOLATED:
-                t05_load = 0.0
-            else:
                 t05_load = 61.0 * ratio_n04
+
+            transformer_loadings_pct["T01"] = t01_load
             transformer_loadings_pct["T05"] = t05_load
+            t01.load_pct = t01_load
             t05.load_pct = t05_load
 
         # Feeder N05 Bank: T02 (500 kVA), T04 (250 kVA / 500 kVA)
         p_n05 = flow_l02
         base_n05 = state.load_zones["LZ02"].base_mw + state.load_zones["LZ04"].base_mw
         ratio_n05 = (p_n05 / base_n05) if base_n05 > 0 else 1.0
+        n05_total_kva = (p_n05 / self.power_factor) * 1000.0
 
         t02 = state.transformers.get("T02")
         t04 = state.transformers.get("T04")
-        n05_total_kva = (p_n05 / self.power_factor) * 1000.0
 
         if t02 and t04:
-            if t04.status == TransformerStatus.ISOLATED:
+            if t02.status == TransformerStatus.ISOLATED and t04.status == TransformerStatus.ISOLATED:
+                t02_load = 0.0
+                t04_load = 0.0
+            elif t04.status == TransformerStatus.ISOLATED:
                 t04_load = 0.0
                 # All N05 load shifts to T02 (500 kVA)
                 t02_load = (n05_total_kva / t02.rating_kva) * 100.0
             elif t02.status == TransformerStatus.ISOLATED:
                 t02_load = 0.0
-                # All N05 load shifts to T04
+                # All N05 load shifts to T04 (250 kVA / 500 kVA)
                 t04_load = (n05_total_kva / t04.rating_kva) * 100.0
             elif t04.rating_kva == 500.0:
                 # Uprated bank: 500 kVA + 500 kVA = 1000 kVA total

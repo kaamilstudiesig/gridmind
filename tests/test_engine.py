@@ -11,6 +11,7 @@ from gridmind.models import (
     ActionCategory,
     IncidentEvent,
     LineStatus,
+    TransformerStatus,
     ViolationType,
 )
 
@@ -385,6 +386,92 @@ class TestEngine(unittest.TestCase):
         self.assertAlmostEqual(res_spike.generation_demand_imbalance_mw, expected_imbalance, places=5)
         self.assertAlmostEqual(res_spike.frequency_hz, expected_freq, places=4)
         self.assertAlmostEqual(res_spike.frequency_hz, 49.9400, places=4)
+
+    def test_transformer_isolation_recalculates_shared_bank_and_overload(self) -> None:
+        """Tests that isolating T04 drops its load to 0 and redistributes N05 demand to T02 creating secondary overload."""
+        # Load SC01 incident conditions
+        self.engine.apply_event(
+            self.state,
+            IncidentEvent(
+                event_type="environment",
+                parameters={"ambient_temp_c": 34.0, "demand_multiplier": 1.15, "storm": False},
+            ),
+        )
+        self.engine.apply_event(
+            self.state,
+            IncidentEvent(
+                event_type="line_failure",
+                parameters={"line_id": "L08"},
+            ),
+        )
+        self.engine.apply_event(
+            self.state,
+            IncidentEvent(
+                event_type="demand_spike",
+                parameters={"target": "N08", "increase_pct": 12.0},
+            ),
+        )
+        action = Action(
+            action_type="isolate_transformer",
+            parameters={"transformer_id": "T04"},
+        )
+        is_valid, reason = self.engine.validate_action(self.state, action)
+        self.assertTrue(is_valid)
+
+        # Sandbox evaluation
+        res = self.engine.evaluate_sandbox(self.state, action)
+        self.assertTrue(res.action_valid)
+        self.assertFalse(res.is_stable)
+
+        # T04 is isolated and carries 0% load at ambient temperature (34°C)
+        self.assertEqual(res.transformer_loadings_pct["T04"], 0.0)
+        self.assertEqual(res.transformer_temperatures_c["T04"], 34.0)
+
+        # T02 absorbs full N05 kVA demand (815.435 kVA / 500 kVA = 163.09%)
+        self.assertAlmostEqual(res.transformer_loadings_pct["T02"], 163.0869, places=3)
+        self.assertAlmostEqual(res.transformer_temperatures_c["T02"], 178.7124, places=2)
+
+        # Violations include T02 overheat (178.71°C > 110.0°C)
+        t02_viols = [v for v in res.violations if v.target_id == "T02" and v.violation_type == ViolationType.TRANSFORMER_OVERHEAT]
+        self.assertEqual(len(t02_viols), 1)
+
+        # Hospital LZ04 critical service remains 100% through surviving T02 unit
+        self.assertEqual(res.critical_load_service_pct["LZ04"], 100.0)
+
+    def test_complete_bank_isolation_cuts_downstream_service_and_violates_critical_load(self) -> None:
+        """Tests that isolating all transformers serving a bus drops downstream served load to 0 and trips critical load."""
+        self.state.transformers["T02"].status = TransformerStatus.ISOLATED
+        self.state.transformers["T04"].status = TransformerStatus.ISOLATED
+
+        res = self.engine.solve(self.state)
+        self.assertFalse(res.is_stable)
+
+        # Both N05 transformers isolated
+        self.assertEqual(res.transformer_loadings_pct["T02"], 0.0)
+        self.assertEqual(res.transformer_loadings_pct["T04"], 0.0)
+
+        # Downstream critical hospital load LZ04 service drops to 0% and triggers violation
+        self.assertEqual(res.critical_load_service_pct["LZ04"], 0.0)
+        crit_viols = [v for v in res.violations if v.violation_type == ViolationType.CRITICAL_LOAD_UNSERVED]
+        self.assertEqual(len(crit_viols), 1)
+        self.assertIn("LZ04", crit_viols[0].description)
+
+    def test_transformer_isolation_sandbox_and_live_semantics(self) -> None:
+        """Tests that evaluate_sandbox does not mutate live state while apply_action does."""
+        action = Action(
+            action_type="isolate_transformer",
+            parameters={"transformer_id": "T04"},
+        )
+        initial_status = self.state.transformers["T04"].status
+        # 1. Sandbox evaluation
+        sb_res = self.engine.evaluate_sandbox(self.state, action)
+        self.assertTrue(sb_res.action_valid)
+        self.assertEqual(self.state.transformers["T04"].status, initial_status)
+        self.assertNotEqual(self.state.transformers["T04"].status, TransformerStatus.ISOLATED)
+
+        # 2. Live execution
+        updated_state = self.engine.apply_action(self.state, action)
+        self.assertEqual(updated_state.transformers["T04"].status, TransformerStatus.ISOLATED)
 
 
 if __name__ == "__main__":
