@@ -1,0 +1,11 @@
+node_id,node_type,name,voltage_kv
+N01,substation,North-Urban-1,66
+N02,substation,Central-Urban-1,66
+N03,substation,South-Urban-1,66
+N04,feeder,Feeder-A,11
+N05,feeder,Feeder-B,11
+N06,feeder,Feeder-C,11
+N07,load_zone,Residential-A,0.415
+N08,load_zone,Commercial-A,0.415
+N09,load_zone,Industrial-A,0.415
+N10,load_zone,Hospital-A,0.415

@@ -1,0 +1,119 @@
+[
+  {
+    "scenario_id": "SC01",
+    "name": "Peak-load feeder/transformer overload",
+    "basis": [
+      "Transformer failures are a recurring BESCOM issue; KERC/BESCOM identify overloading among causes.",
+      "Public BESCOM materials document distribution strengthening and feeder-related interventions."
+    ],
+    "operator_question": "How do we relieve overload while keeping critical load online and avoiding a secondary overload?",
+    "inputs": [
+      "feeder_load_pct",
+      "transformer_load_pct",
+      "transformer_rating_kva",
+      "alternate_feeder_capacity_pct",
+      "critical_load_mw",
+      "maintenance_history"
+    ],
+    "candidate_actions": [
+      "load_transfer",
+      "load_restriction",
+      "feeder_bifurcation",
+      "transformer_replacement"
+    ],
+    "human_gate": "Approve the selected simulated switching/load-change action before execution.",
+    "verification": [
+      "frequency_ok",
+      "line_loading_ok",
+      "transformer_temperature_ok",
+      "critical_load_preserved"
+    ]
+  },
+  {
+    "scenario_id": "SC02",
+    "name": "Storm-induced cascading failure",
+    "basis": [
+      "Bengaluru storm events have produced transformer failures, snapped lines/poles and large outage volumes.",
+      "KERC/BESCOM identify rain/natural calamities as contributors to transformer failures."
+    ],
+    "operator_question": "What is the safest restoration sequence without creating secondary overloads?",
+    "inputs": [
+      "faulted_lines",
+      "remaining_line_capacity",
+      "transformer_loading",
+      "critical_loads",
+      "weather_severity"
+    ],
+    "candidate_actions": [
+      "isolate_fault",
+      "restore_priority_load",
+      "reroute_supply",
+      "defer_noncritical_load"
+    ],
+    "human_gate": "Approve the restoration sequence before simulated switching.",
+    "verification": [
+      "fault_isolated",
+      "no_new_overload",
+      "critical_load_restored",
+      "grid_stable"
+    ]
+  },
+  {
+    "scenario_id": "SC03",
+    "name": "Transformer overheating / oil-condition incident",
+    "basis": [
+      "Published Bengaluru incidents include transformer fires/overheating.",
+      "KERC/BESCOM document oil topping, grounding and deteriorated-component replacement."
+    ],
+    "operator_question": "Should the transformer continue, reduce load, isolate, or be replaced?",
+    "inputs": [
+      "transformer_temperature_c",
+      "load_pct",
+      "oil_condition",
+      "age_years",
+      "failure_history",
+      "nearby_load"
+    ],
+    "candidate_actions": [
+      "reduce_load",
+      "isolate_transformer",
+      "replace_transformer",
+      "continue_with_monitoring"
+    ],
+    "human_gate": "Approve the maintenance/isolation action.",
+    "verification": [
+      "temperature_below_limit",
+      "safety_checks_pass",
+      "load_served"
+    ]
+  },
+  {
+    "scenario_id": "SC04",
+    "name": "Unsafe re-energization after fault",
+    "basis": [
+      "KERC/BESCOM safety material covers technical audits of 11kV networks, DTCs, LT networks and feeder equipment.",
+      "Public Bengaluru incident reporting has highlighted grounding/electrical-safety concerns."
+    ],
+    "operator_question": "Is the circuit actually safe to re-energize?",
+    "inputs": [
+      "fault_status",
+      "earthing_status",
+      "protection_status",
+      "inspection_status",
+      "work_order_status"
+    ],
+    "candidate_actions": [
+      "re_energize",
+      "keep_isolated",
+      "dispatch_inspection",
+      "replace_faulty_component"
+    ],
+    "human_gate": "Mandatory human approval for any re-energization.",
+    "verification": [
+      "fault_cleared",
+      "earthing_verified",
+      "protection_verified",
+      "inspection_complete"
+    ]
+  }
+]

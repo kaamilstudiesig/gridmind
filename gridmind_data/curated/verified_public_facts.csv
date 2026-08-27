@@ -1,0 +1,17 @@
+fact_id,period,metric,value,unit,data_class,source
+F001,2023-03-31/2024-03-31,distribution_transformers_total,497991,count,public/real,BEE BESCOM audit
+F002,2024-03-31,distribution_transformers_metered,119632,count,public/real,BEE BESCOM audit
+F003,2024-03-31,distribution_transformers_unmetered,364999,count,public/real,BEE BESCOM audit
+F004,2024-03-31,distribution_transformers_to_be_metered,87067,count,public/real,BEE BESCOM audit
+F005,2024-03-31,feeders_up_to_11kv_metered,100,percent,public/real,BEE BESCOM audit
+F006,2024-03-31,dt_meters_with_amr_enabled,95872,count,public/real,BEE BESCOM audit
+F007,FY2023-24,transformers_existing,497991,count,public/real,KERC Tariff Order 2025
+F008,FY2023-24,transformers_failed,38288,count,public/real,KERC Tariff Order 2025
+F009,FY2023-24,transformer_failure_rate,7.69,percent,public/real,KERC Tariff Order 2025
+F010,FY2024-25 through Jan-2025,transformers_existing,523500,count,public/real,KERC Tariff Order 2025
+F011,FY2024-25 through Jan-2025,transformers_failed,31852,count,public/real,KERC Tariff Order 2025
+F012,FY2024-25 through Jan-2025,transformer_failure_rate,6.08,percent,public/real,KERC Tariff Order 2025
+F013,FY2022-23,transformers_failed,38047,count,public/real,KERC Tariff Order 2025
+F014,FY2022-23,transformer_failure_rate,7.95,percent,public/real,KERC Tariff Order 2025
+F015,FY2021-22,transformers_failed,35987,count,public/real,KERC Tariff Order 2025
+F016,FY2021-22,transformer_failure_rate,7.9,percent,public/real,KERC Tariff Order 2025

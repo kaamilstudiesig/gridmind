@@ -1,0 +1,9 @@
+edge_id,from_node,to_node,line_id,voltage_class,capacity_mw,status
+E01,N01,N04,L01,11kV,30,healthy
+E02,N02,N05,L02,11kV,35,healthy
+E03,N03,N06,L03,11kV,40,healthy
+E04,N04,N07,L04,LT,8,healthy
+E05,N05,N08,L05,LT,10,healthy
+E06,N06,N09,L06,LT,12,healthy
+E07,N05,N10,L07,LT,6,healthy
+E08,N04,N05,L08,11kV,25,healthy
