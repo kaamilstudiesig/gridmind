@@ -15,7 +15,6 @@ Architecture:
 
 from __future__ import annotations
 
-import sys
 from typing import Any, Optional
 from pydantic import BaseModel, Field
 import mcp.types as types
