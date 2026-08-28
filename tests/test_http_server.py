@@ -68,19 +68,26 @@ class TestMCPServerHTTP(unittest.IsolatedAsyncioTestCase):
         cls.server_thread = threading.Thread(target=_run_server, daemon=True)
         cls.server_thread.start()
 
-        # Wait until server is reachable
-        for _ in range(50):
-            try:
-                with httpx2.Client() as client:
-                    resp = client.get(f"{cls.base_url}/health", timeout=1.0)
+        # Wait until server is reachable with deadline
+        deadline = time.time() + 5.0
+        server_ready = False
+        with httpx2.Client() as client:
+            while time.time() < deadline:
+                try:
+                    resp = client.get(f"{cls.base_url}/health", timeout=0.5)
                     if resp.status_code == 200:
+                        server_ready = True
                         break
-            except Exception:
-                time.sleep(0.05)
+                except Exception:
+                    time.sleep(0.02)
+        if not server_ready:
+            raise RuntimeError(f"Uvicorn test server failed to start on {cls.base_url} within 5.0s")
 
     @classmethod
     def tearDownClass(cls) -> None:
         cls.uvicorn_server.should_exit = True
+        if hasattr(cls, "server_thread") and cls.server_thread.is_alive():
+            cls.server_thread.join(timeout=5.0)
 
     async def test_01_http_health_smoke_test(self) -> None:
         """Tests that GET /health and GET / return 200 OK with server metadata and tool list."""

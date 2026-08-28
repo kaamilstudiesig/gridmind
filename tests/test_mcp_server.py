@@ -21,6 +21,7 @@ Tests:
 
 import asyncio
 import json
+import sys
 import unittest
 from typing import Any
 
@@ -322,7 +323,7 @@ class TestMCPServer(unittest.IsolatedAsyncioTestCase):
         from mcp.client.stdio import stdio_client, StdioServerParameters
 
         server_params = StdioServerParameters(
-            command="/home/kaamil/.venv/bin/python",
+            command=sys.executable,
             args=["-m", "gridmind.server_cli"],
             env=None,
         )
@@ -354,22 +355,44 @@ class TestMCPServer(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(inc["scenario_id"], "SC01")
         self.assertFalse(inc["is_stable"])
 
-    async def test_18_rejection_critical_service_not_fabricated(self) -> None:
-        """Tests that MCP validation rejection reports actual simulator critical service instead of fabricating 100%."""
+    async def test_19_mcp_rejection_contract_consistency(self) -> None:
+        """Tests that all MCP rejection/error responses conform to the consistent structured contract."""
         await self._call_tool_json("load_scenario", {"scenario_id": "SC01"})
-        # Call evaluate_action with malformed parameters
-        res = await self._call_tool_json(
+
+        # Case A: Unknown action type in evaluate_action
+        res_eval_unknown = await self._call_tool_json(
             "evaluate_action",
+            {"action_type": "completely_bogus_action", "parameters": {}},
+        )
+        self.assertFalse(res_eval_unknown["action_valid"])
+        self.assertFalse(res_eval_unknown["is_stable"])
+        self.assertIn("Allowed actions", res_eval_unknown["rejection_reason"])
+        self.assertTrue(len(res_eval_unknown["violations"]) > 0)
+        self.assertIn("LZ04", res_eval_unknown["critical_load_service_pct"])
+
+        # Case B: Unknown action type in execute_action
+        res_exec_unknown = await self._call_tool_json(
+            "execute_action",
+            {"action_type": "completely_bogus_action", "parameters": {}},
+        )
+        self.assertFalse(res_exec_unknown["success"])
+        self.assertFalse(res_exec_unknown["is_stable"])
+        self.assertIn("Allowed actions", res_exec_unknown["error_message"])
+        self.assertTrue(len(res_exec_unknown["violations"]) > 0)
+        self.assertIn("LZ04", res_exec_unknown["critical_load_service_pct"])
+
+        # Case C: Domain constraint rejection in execute_action (curtailing critical hospital load)
+        res_exec_crit = await self._call_tool_json(
+            "execute_action",
             {
                 "action_type": "load_restriction",
-                "parameters": {"invalid_key": 123},
+                "parameters": {"target": "N10", "reduction_pct": 20.0},
             },
         )
-        self.assertFalse(res["action_valid"])
-        crit_svc = res["critical_load_service_pct"]
-        # Must report actual simulator critical load zones (LZ04 for hospital), not a fabricated dict mapping all zones to 100%
-        self.assertIn("LZ04", crit_svc)
-        self.assertEqual(crit_svc["LZ04"], 100.0)
+        self.assertFalse(res_exec_crit["success"])
+        self.assertFalse(res_exec_crit["is_stable"])
+        self.assertIn("CRITICAL", res_exec_crit["error_message"])
+        self.assertIn("LZ04", res_exec_crit["critical_load_service_pct"])
 
 
 if __name__ == "__main__":
