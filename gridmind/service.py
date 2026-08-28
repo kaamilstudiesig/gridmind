@@ -33,7 +33,7 @@ from gridmind.models import (
 )
 
 
-SUPPORTED_SCENARIOS = frozenset({"SC01", "BASE"})
+SUPPORTED_SCENARIOS = frozenset({"SC01", "SC01-B", "SC01_B", "BASE"})
 
 
 class GridMindService:
@@ -59,6 +59,7 @@ class GridMindService:
         """
         Initializes or resets the simulator to a specific scenario state.
         For SC01: applies heatwave environment, trips L08, and spikes N08.
+        For SC01-B: applies heatwave environment and spikes N08 with L08 operational.
         Rejects unsupported scenario IDs before mutating live state.
         """
         if scenario_id not in SUPPORTED_SCENARIOS:
@@ -69,7 +70,7 @@ class GridMindService:
         self.state = load_curated_grid(self.data_dir)
         self.active_scenario_id = scenario_id
 
-        if scenario_id == "SC01":
+        if scenario_id in ("SC01", "SC01-B", "SC01_B"):
             # 1. Heatwave environment
             self.engine.apply_event(
                 self.state,
@@ -78,14 +79,15 @@ class GridMindService:
                     parameters={"ambient_temp_c": 34.0, "demand_multiplier": 1.15, "storm": False},
                 ),
             )
-            # 2. Lockout on L08
-            self.engine.apply_event(
-                self.state,
-                IncidentEvent(
-                    event_type="line_failure",
-                    parameters={"line_id": "L08"},
-                ),
-            )
+            # 2. Lockout on L08 (SC01 only; SC01-B keeps L08 operational/open)
+            if scenario_id == "SC01":
+                self.engine.apply_event(
+                    self.state,
+                    IncidentEvent(
+                        event_type="line_failure",
+                        parameters={"line_id": "L08"},
+                    ),
+                )
             # 3. Demand spike on N08 (+12%)
             self.engine.apply_event(
                 self.state,
