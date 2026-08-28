@@ -19,7 +19,7 @@ import threading
 import time
 import unittest
 from typing import Any
-import httpx2
+import httpx
 import uvicorn
 from mcp.client.session import ClientSession
 from mcp.client.sse import sse_client
@@ -71,7 +71,7 @@ class TestMCPServerHTTP(unittest.IsolatedAsyncioTestCase):
         # Wait until server is reachable with deadline
         deadline = time.time() + 5.0
         server_ready = False
-        with httpx2.Client() as client:
+        with httpx.Client() as client:
             while time.time() < deadline:
                 try:
                     resp = client.get(f"{cls.base_url}/health", timeout=0.5)
@@ -91,7 +91,7 @@ class TestMCPServerHTTP(unittest.IsolatedAsyncioTestCase):
 
     async def test_01_http_health_smoke_test(self) -> None:
         """Tests that GET /health and GET / return 200 OK with server metadata and tool list."""
-        async with httpx2.AsyncClient() as client:
+        async with httpx.AsyncClient() as client:
             res = await client.get(f"{self.base_url}/health")
             self.assertEqual(res.status_code, 200)
             data = res.json()

@@ -243,8 +243,26 @@ class GridMindMCPServer:
                 action_type, parameters
             )
             if not is_valid:
-                cur_state = service.get_grid_state()
-                sim_res = service.state.latest_result or service.engine.solve(service.state)
+                cur_state = service.get_grid_state() if service.state else None
+                sim_res = (
+                    service.state.latest_result or service.engine.solve(service.state)
+                ) if service.state else None
+
+                freq = cur_state.frequency_hz if cur_state else None
+                total_kw = cur_state.total_demand_kw if cur_state else None
+                line_loadings = (
+                    {line.line_id: line.loading_pct for line in cur_state.lines}
+                    if cur_state else {}
+                )
+                trans_temps = (
+                    {t.transformer_id: t.temperature_c for t in cur_state.transformers}
+                    if cur_state else {}
+                )
+                crit_service = (
+                    dict(sim_res.critical_load_service_pct)
+                    if sim_res else {}
+                )
+
                 return {
                     "action_valid": False,
                     "rejection_reason": err,
@@ -258,15 +276,11 @@ class GridMindMCPServer:
                             "description": err or "Invalid action parameters",
                         }
                     ],
-                    "predicted_frequency_hz": cur_state.frequency_hz,
-                    "predicted_total_demand_kw": cur_state.total_demand_kw,
-                    "predicted_line_loadings_pct": {
-                        line.line_id: line.loading_pct for line in cur_state.lines
-                    },
-                    "predicted_transformer_temperatures_c": {
-                        t.transformer_id: t.temperature_c for t in cur_state.transformers
-                    },
-                    "critical_load_service_pct": dict(sim_res.critical_load_service_pct),
+                    "predicted_frequency_hz": freq,
+                    "predicted_total_demand_kw": total_kw,
+                    "predicted_line_loadings_pct": line_loadings,
+                    "predicted_transformer_temperatures_c": trans_temps,
+                    "critical_load_service_pct": crit_service,
                     "summary": f"Action evaluation rejected: {err}",
                 }
 
@@ -294,8 +308,26 @@ class GridMindMCPServer:
                 action_type, parameters
             )
             if not is_valid:
-                cur_state = service.get_grid_state()
-                sim_res = service.state.latest_result or service.engine.solve(service.state)
+                cur_state = service.get_grid_state() if service.state else None
+                sim_res = (
+                    service.state.latest_result or service.engine.solve(service.state)
+                ) if service.state else None
+
+                freq = cur_state.frequency_hz if cur_state else None
+                total_kw = cur_state.total_demand_kw if cur_state else None
+                line_loadings = (
+                    {line.line_id: line.loading_pct for line in cur_state.lines}
+                    if cur_state else {}
+                )
+                trans_temps = (
+                    {t.transformer_id: t.temperature_c for t in cur_state.transformers}
+                    if cur_state else {}
+                )
+                crit_service = (
+                    dict(sim_res.critical_load_service_pct)
+                    if sim_res else {}
+                )
+
                 return {
                     "success": False,
                     "action_applied": action_type,
@@ -309,15 +341,11 @@ class GridMindMCPServer:
                             "description": err or "Invalid action parameters",
                         }
                     ],
-                    "frequency_hz": cur_state.frequency_hz,
-                    "total_demand_kw": cur_state.total_demand_kw,
-                    "line_loadings_pct": {
-                        line.line_id: line.loading_pct for line in cur_state.lines
-                    },
-                    "transformer_temperatures_c": {
-                        t.transformer_id: t.temperature_c for t in cur_state.transformers
-                    },
-                    "critical_load_service_pct": dict(sim_res.critical_load_service_pct),
+                    "frequency_hz": freq,
+                    "total_demand_kw": total_kw,
+                    "line_loadings_pct": line_loadings,
+                    "transformer_temperatures_c": trans_temps,
+                    "critical_load_service_pct": crit_service,
                     "summary": f"Action execution rejected: {err}",
                     "error_message": err,
                 }
