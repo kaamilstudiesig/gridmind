@@ -1,0 +1,453 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GridMind — AI Electrical Grid Incident Command Center</title>
+  <meta name="description" content="Autonomous multi-agent electrical grid incident commander and real-time distribution operations console.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Top Navigation / Status Header -->
+    <header class="top-nav" id="top-nav">
+      <div class="brand-group">
+        <div class="logo-mark">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2">
+            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+          </svg>
+        </div>
+        <div class="brand-titles">
+          <h1>GRIDMIND</h1>
+          <span class="subhead">Autonomous AI Grid Incident Command • Bengaluru Distribution Core</span>
+        </div>
+      </div>
+
+      <div class="header-status-strip">
+        <div class="status-pill healthy" id="pill-system">
+          <span class="dot"></span>
+          <span class="lbl">SYSTEM:</span>
+          <strong id="val-system-status">OPERATIONAL</strong>
+        </div>
+
+        <div class="status-pill warning" id="pill-incident-state">
+          <span class="dot"></span>
+          <span class="lbl">LIFECYCLE:</span>
+          <strong id="val-lifecycle-state">IDLE</strong>
+        </div>
+
+        <div class="status-pill active-ai" id="pill-ai-agent">
+          <span class="dot pulse"></span>
+          <span class="lbl">AI AGENT:</span>
+          <strong id="val-agent-status">READY</strong>
+        </div>
+      </div>
+
+      <div class="header-controls">
+        <div class="scenario-selector-group">
+          <label for="scenario-select">SCENARIO:</label>
+          <select id="scenario-select" class="tech-select">
+            <option value="SC01">SC01: Peak Overload & Tie Lockout</option>
+            <option value="BASE">BASE: Nominal Operating State</option>
+          </select>
+          <button id="btn-load-scenario" class="btn btn-secondary">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l6.67-6.67"/></svg>
+            Reset / Load
+          </button>
+        </div>
+
+        <button id="btn-run-investigation" class="btn btn-primary btn-pulse">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+          Run AI Incident Commander
+        </button>
+      </div>
+    </header>
+
+    <!-- Main Grid Dashboard Viewport -->
+    <main class="dashboard-body">
+      <!-- LEFT COLUMN: Grid Topology & Map View -->
+      <section class="panel panel-topology" id="panel-topology">
+        <div class="panel-header">
+          <div class="panel-title-group">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18"></rect><line x1="7" y1="2" x2="7" y2="22"></line><line x1="17" y1="2" x2="17" y2="22"></line><line x1="2" y1="12" x2="22" y2="12"></line><line x1="2" y1="7" x2="7" y2="7"></line><line x1="2" y1="17" x2="7" y2="17"></line><line x1="17" y1="17" x2="22" y2="17"></line><line x1="17" y1="7" x2="22" y2="7"></line></svg>
+            <h2>INTERACTIVE GRID TOPOLOGY (66kV / 11kV / 0.415kV)</h2>
+          </div>
+          <span class="live-tag"><span class="blink">●</span> LIVE SOLVER</span>
+        </div>
+
+        <div class="topology-container" id="topology-viewport">
+          <!-- Interactive SVG Network Diagram -->
+          <svg id="grid-svg" viewBox="0 0 760 560" class="network-svg">
+            <defs>
+              <linearGradient id="grad-healthy" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stop-color="#10b981" stop-opacity="0.3"/>
+                <stop offset="100%" stop-color="#059669" stop-opacity="0.7"/>
+              </linearGradient>
+              <linearGradient id="grad-warning" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stop-color="#f59e0b" stop-opacity="0.3"/>
+                <stop offset="100%" stop-color="#d97706" stop-opacity="0.7"/>
+              </linearGradient>
+              <linearGradient id="grad-critical" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stop-color="#ef4444" stop-opacity="0.4"/>
+                <stop offset="100%" stop-color="#b91c1c" stop-opacity="0.8"/>
+              </linearGradient>
+              <filter id="glow-cyan" x="-20%" y="-20%" width="140%" height="140%">
+                <feGaussianBlur stdDeviation="4" result="blur"/>
+                <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+              </filter>
+            </defs>
+
+            <!-- Grid Substation Layer (66 kV) -->
+            <g id="svg-substations">
+              <!-- N01 -->
+              <g class="node-group" id="svg-node-N01" transform="translate(100, 60)">
+                <rect class="substation-box" width="130" height="50" rx="6"/>
+                <text x="65" y="24" class="node-title">N01 (66kV)</text>
+                <text x="65" y="40" class="node-sub">North-Urban-1</text>
+              </g>
+              <!-- N02 -->
+              <g class="node-group" id="svg-node-N02" transform="translate(320, 60)">
+                <rect class="substation-box" width="130" height="50" rx="6"/>
+                <text x="65" y="24" class="node-title">N02 (66kV)</text>
+                <text x="65" y="40" class="node-sub">Central-Urban-1</text>
+              </g>
+              <!-- N03 -->
+              <g class="node-group" id="svg-node-N03" transform="translate(540, 60)">
+                <rect class="substation-box" width="130" height="50" rx="6"/>
+                <text x="65" y="24" class="node-title">N03 (66kV)</text>
+                <text x="65" y="40" class="node-sub">South-Urban-1</text>
+              </g>
+            </g>
+
+            <!-- Grid Lines Layer -->
+            <g id="svg-lines">
+              <!-- L01 (N01 -> N04) -->
+              <path id="svg-line-L01" class="grid-line" d="M 165 110 L 165 200"/>
+              <text x="175" y="160" class="line-badge" id="lbl-L01">L01: 0 kW</text>
+
+              <!-- L02 (N02 -> N05) -->
+              <path id="svg-line-L02" class="grid-line" d="M 385 110 L 385 200"/>
+              <text x="395" y="160" class="line-badge" id="lbl-L02">L02: 0 kW</text>
+
+              <!-- L03 (N03 -> N06) -->
+              <path id="svg-line-L03" class="grid-line" d="M 605 110 L 605 200"/>
+              <text x="615" y="160" class="line-badge" id="lbl-L03">L03: 0 kW</text>
+
+              <!-- L08 (Emergency Tie Line between N04 & N05) -->
+              <path id="svg-line-L08" class="grid-line tie-line" d="M 235 235 L 315 235"/>
+              <text x="275" y="222" class="tie-badge" id="lbl-L08">L08 (TIE)</text>
+
+              <!-- L04 (N04 -> N07) -->
+              <path id="svg-line-L04" class="grid-line" d="M 165 270 L 165 410"/>
+              <text x="175" y="340" class="line-badge" id="lbl-L04">L04: 0 kW</text>
+
+              <!-- L05 (N05 -> N08) -->
+              <path id="svg-line-L05" class="grid-line" d="M 360 270 L 320 410"/>
+              <text x="310" y="340" class="line-badge" id="lbl-L05">L05: 0 kW</text>
+
+              <!-- L07 (N05 -> N10 Hospital) -->
+              <path id="svg-line-L07" class="grid-line critical-feed" d="M 410 270 L 460 410"/>
+              <text x="445" y="340" class="line-badge" id="lbl-L07">L07: 0 kW</text>
+
+              <!-- L06 (N06 -> N09) -->
+              <path id="svg-line-L06" class="grid-line" d="M 605 270 L 605 410"/>
+              <text x="615" y="340" class="line-badge" id="lbl-L06">L06: 0 kW</text>
+            </g>
+
+            <!-- Feeder Stations Layer (11 kV) -->
+            <g id="svg-feeders">
+              <!-- N04 (Feeder-A) -->
+              <g class="node-group" id="svg-node-N04" transform="translate(95, 200)">
+                <rect class="feeder-box" width="140" height="70" rx="6"/>
+                <text x="70" y="24" class="node-title">N04 Feeder-A (11kV)</text>
+                <text x="70" y="44" class="transformer-tag" id="tag-T01-T05">T01 (250kVA) • T05 (250kVA)</text>
+                <text x="70" y="60" class="temp-tag" id="temp-N04">T01: 71°C | T05: 69°C</text>
+              </g>
+
+              <!-- N05 (Feeder-B) -->
+              <g class="node-group" id="svg-node-N05" transform="translate(315, 200)">
+                <rect class="feeder-box" width="140" height="70" rx="6"/>
+                <text x="70" y="24" class="node-title">N05 Feeder-B (11kV)</text>
+                <text x="70" y="44" class="transformer-tag" id="tag-T02-T04">T02 (500kVA) • T04 (250kVA)</text>
+                <text x="70" y="60" class="temp-tag" id="temp-N05">T02: 82°C | T04: 112°C</text>
+              </g>
+
+              <!-- N06 (Feeder-C) -->
+              <g class="node-group" id="svg-node-N06" transform="translate(535, 200)">
+                <rect class="feeder-box" width="140" height="70" rx="6"/>
+                <text x="70" y="24" class="node-title">N06 Feeder-C (11kV)</text>
+                <text x="70" y="44" class="transformer-tag" id="tag-T03">T03 (500kVA)</text>
+                <text x="70" y="60" class="temp-tag" id="temp-N06">T03: 74°C</text>
+              </g>
+            </g>
+
+            <!-- Load Zones Layer (0.415 kV) -->
+            <g id="svg-load-zones">
+              <!-- N07: LZ01 Residential -->
+              <g class="node-group load-zone" id="svg-node-N07" transform="translate(95, 410)">
+                <rect class="load-box" width="140" height="65" rx="6"/>
+                <text x="70" y="22" class="node-title">N07: Residential-A</text>
+                <text x="70" y="40" class="load-detail" id="load-LZ01">LZ01: 315.9 kW</text>
+                <text x="70" y="55" class="priority-tag normal">NORMAL PRIORITY</text>
+              </g>
+
+              <!-- N08: LZ02 Commercial -->
+              <g class="node-group load-zone" id="svg-node-N08" transform="translate(245, 410)">
+                <rect class="load-box" width="140" height="65" rx="6"/>
+                <text x="70" y="22" class="node-title">N08: Commercial-A</text>
+                <text x="70" y="40" class="load-detail" id="load-LZ02">LZ02: 447.9 kW</text>
+                <text x="70" y="55" class="priority-tag normal">NORMAL PRIORITY</text>
+              </g>
+
+              <!-- N10: LZ04 Hospital-A [CRITICAL] -->
+              <g class="node-group load-zone critical-node" id="svg-node-N10" transform="translate(400, 410)">
+                <rect class="load-box critical" width="140" height="65" rx="6"/>
+                <text x="70" y="22" class="node-title">N10: Hospital-A</text>
+                <text x="70" y="40" class="load-detail" id="load-LZ04">LZ04: 172.0 kW (100%)</text>
+                <text x="70" y="55" class="priority-tag critical">CRITICAL FACILITY</text>
+              </g>
+
+              <!-- N09: LZ03 Industrial -->
+              <g class="node-group load-zone" id="svg-node-N09" transform="translate(555, 410)">
+                <rect class="load-box" width="140" height="65" rx="6"/>
+                <text x="70" y="22" class="node-title">N09: Industrial-A</text>
+                <text x="70" y="40" class="load-detail" id="load-LZ03">LZ03: 323.0 kW</text>
+                <text x="70" y="55" class="priority-tag high">HIGH PRIORITY</text>
+              </g>
+            </g>
+          </svg>
+        </div>
+
+        <div class="topology-footer" id="topology-inspected-card">
+          <div class="inspected-header">
+            <span class="inspected-label">INSPECTED COMPONENT TELEMETRY</span>
+            <span class="inspected-id" id="inspected-id">Select any equipment in the diagram</span>
+          </div>
+          <div class="inspected-body" id="inspected-body">
+            <div class="telemetry-compact">
+              <div><span class="k">Type:</span> <span class="v" id="insp-type">—</span></div>
+              <div><span class="k">Status:</span> <span class="v" id="insp-status">—</span></div>
+              <div><span class="k">Loading:</span> <span class="v" id="insp-loading">—</span></div>
+              <div><span class="k">Temperature:</span> <span class="v" id="insp-temp">—</span></div>
+              <div><span class="k">Violations:</span> <span class="v" id="insp-violations">—</span></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- CENTER COLUMN: Telemetry Gauges & Live Indicators -->
+      <section class="panel panel-telemetry" id="panel-telemetry">
+        <div class="panel-header">
+          <div class="panel-title-group">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+            <h2>GRID METRICS & INSTRUMENTATION</h2>
+          </div>
+          <span class="freq-tag" id="card-freq-tag">49.9204 Hz</span>
+        </div>
+
+        <div class="telemetry-grid">
+          <!-- Frequency Card -->
+          <div class="metric-card" id="card-freq">
+            <div class="metric-header">
+              <span class="metric-title">SYSTEM FREQUENCY</span>
+              <span class="metric-badge" id="badge-freq">NOMINAL</span>
+            </div>
+            <div class="metric-value-row">
+              <span class="metric-number mono" id="val-frequency">50.0000</span>
+              <span class="metric-unit">Hz</span>
+            </div>
+            <div class="metric-bar-wrap">
+              <div class="metric-bar freq-bar" id="bar-frequency" style="width: 50%;"></div>
+            </div>
+            <div class="metric-bounds mono">
+              <span>MIN: 49.50 Hz</span>
+              <span>TARGET: 50.00 Hz</span>
+              <span>MAX: 50.50 Hz</span>
+            </div>
+          </div>
+
+          <!-- Total Demand Card -->
+          <div class="metric-card" id="card-demand">
+            <div class="metric-header">
+              <span class="metric-title">TOTAL ACTIVE LOAD</span>
+              <span class="metric-badge" id="badge-demand">MONITORED</span>
+            </div>
+            <div class="metric-value-row">
+              <span class="metric-number mono" id="val-total-demand">1258.75</span>
+              <span class="metric-unit">kW</span>
+            </div>
+            <div class="metric-bar-wrap">
+              <div class="metric-bar" id="bar-demand" style="width: 75%;"></div>
+            </div>
+            <div class="metric-bounds mono">
+              <span>BASE: 1258.75 kW</span>
+              <span id="val-demand-multiplier">MULT: 1.00x</span>
+            </div>
+          </div>
+
+          <!-- Stability Card -->
+          <div class="metric-card" id="card-stability">
+            <div class="metric-header">
+              <span class="metric-title">NETWORK STABILITY</span>
+              <span class="metric-badge" id="badge-violations">0 VIOLATIONS</span>
+            </div>
+            <div class="metric-value-row">
+              <span class="metric-state" id="val-stability">STABLE</span>
+            </div>
+            <p class="metric-desc" id="val-stability-desc">All electrical, frequency droop, and thermal limits strictly satisfied.</p>
+          </div>
+
+          <!-- Critical Facilities Card -->
+          <div class="metric-card critical-highlight" id="card-critical">
+            <div class="metric-header">
+              <span class="metric-title">CRITICAL FACILITIES</span>
+              <span class="metric-badge safe" id="badge-critical">PROTECTED</span>
+            </div>
+            <div class="metric-value-row">
+              <span class="metric-number mono" id="val-critical-service">100.0</span>
+              <span class="metric-unit">%</span>
+            </div>
+            <p class="metric-desc" id="val-critical-desc">Hospital-A (Node N10 / Zone LZ04) online at full continuous supply.</p>
+          </div>
+        </div>
+
+        <!-- Active Constraint Violations Box -->
+        <div class="violations-box" id="violations-box">
+          <div class="violations-header">
+            <span class="v-title">ACTIVE CONSTRAINT VIOLATIONS</span>
+            <span class="v-count mono" id="v-count">0 ACTIVE</span>
+          </div>
+          <div class="violations-list" id="violations-list">
+            <div class="empty-notice">Zero active constraint violations. Network operating within nominal design envelope.</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- RIGHT COLUMN: AI Incident Commander & Plan Comparison -->
+      <section class="panel panel-commander" id="panel-commander">
+        <div class="panel-header">
+          <div class="panel-title-group">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a10 10 0 1 0 10 10H12V2z"></path><path d="M12 12L2.5 7.5"></path><path d="M12 12v10"></path></svg>
+            <h2>AI INCIDENT COMMANDER (MULTI-AGENT)</h2>
+          </div>
+          <span class="agent-mode-tag" id="agent-orchestration-mode">TRUEFORGE / MCP</span>
+        </div>
+
+        <!-- Multi-Agent Orchestration Tracker -->
+        <div class="agent-pipeline-tracker" id="agent-pipeline-tracker">
+          <div class="agent-step" id="step-analyst">
+            <div class="step-indicator">1</div>
+            <div class="step-meta">
+              <strong>Grid Analyst</strong>
+              <span class="step-desc" id="desc-analyst">Awaiting trigger</span>
+            </div>
+            <span class="step-status mono" id="status-analyst">IDLE</span>
+          </div>
+
+          <div class="agent-step" id="step-simulator">
+            <div class="step-indicator">2</div>
+            <div class="step-meta">
+              <strong>Simulation Agent</strong>
+              <span class="step-desc" id="desc-simulator">Counterfactual sandbox</span>
+            </div>
+            <span class="step-status mono" id="status-simulator">IDLE</span>
+          </div>
+
+          <div class="agent-step" id="step-safety">
+            <div class="step-indicator">3</div>
+            <div class="step-meta">
+              <strong>Safety Agent</strong>
+              <span class="step-desc" id="desc-safety">Independent safety check</span>
+            </div>
+            <span class="step-status mono" id="status-safety">IDLE</span>
+          </div>
+        </div>
+
+        <!-- Plan Comparison Area -->
+        <div class="plans-container" id="plans-container">
+          <div class="plans-header">
+            <h3>CANDIDATE RECOVERY STRATEGIES (SANDBOX EVALUATIONS)</h3>
+            <span class="plans-sub">Evaluated deterministically via evaluate_action</span>
+          </div>
+
+          <div class="plans-cards" id="plans-cards-list">
+            <div class="empty-notice">No active plans. Click "Run AI Incident Commander" to trigger autonomous multi-agent analysis.</div>
+          </div>
+        </div>
+
+        <!-- Human Approval Gate Overlay / Card -->
+        <div class="approval-gate-card hidden" id="approval-gate-card">
+          <div class="gate-header">
+            <div class="gate-warning-icon">⚠</div>
+            <div>
+              <h3>CONSEQUENTIAL ACTION REQUIRES HUMAN APPROVAL</h3>
+              <span class="gate-sub">Operator checkpoint mandatory before executing any live grid-changing operation</span>
+            </div>
+          </div>
+
+          <div class="gate-body" id="gate-body">
+            <div class="recommended-action-banner">
+              <span class="rec-label">RECOMMENDED INTERVENTION:</span>
+              <strong class="rec-name" id="gate-action-name">Targeted Load Curtailment (-15%)</strong>
+            </div>
+
+            <div class="gate-grid">
+              <div><span class="k">Action Type:</span> <span class="v mono" id="gate-action-type">load_restriction</span></div>
+              <div><span class="k">Parameters:</span> <span class="v mono" id="gate-action-params">target=N08, reduction=15%</span></div>
+              <div><span class="k">Predicted Stability:</span> <span class="v badge-pass mono" id="gate-predicted-stability">STABLE</span></div>
+              <div><span class="k">Safety Review:</span> <span class="v badge-pass mono" id="gate-safety-verdict">APPROVED</span></div>
+              <div><span class="k">Critical Facilities:</span> <span class="v mono" id="gate-critical-impact">0 Affected (100% Protected)</span></div>
+              <div><span class="k">Risk Assessment:</span> <span class="v mono" id="gate-risk-level">LOW RISK</span></div>
+            </div>
+
+            <div class="gate-reasoning-box">
+              <span class="k">WHY THIS PLAN?</span>
+              <p id="gate-reasoning-text">Selected as optimal recovery strategy. Predicted to restore grid stability with minimal curtailment.</p>
+            </div>
+          </div>
+
+          <div class="gate-actions">
+            <button id="btn-reject-action" class="btn btn-danger">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+              Reject Action & Replan
+            </button>
+            <button id="btn-approve-action" class="btn btn-success btn-pulse">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg>
+              Approve & Execute On Live Grid
+            </button>
+          </div>
+        </div>
+
+        <!-- Post-Execution Verification Box -->
+        <div class="verification-box hidden" id="verification-box">
+          <div class="verif-header">
+            <span class="verif-title">POST-ACTION VERIFICATION</span>
+            <span class="verif-badge mono" id="verif-badge">VERIFYING</span>
+          </div>
+          <p id="verif-message" class="verif-message">Querying live post-action telemetry to verify zero active violations...</p>
+        </div>
+      </section>
+    </main>
+
+    <!-- Bottom Real-time Audit Timeline -->
+    <footer class="audit-timeline-footer" id="audit-timeline-footer">
+      <div class="timeline-header">
+        <div class="t-title-group">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 14 14"></polyline></svg>
+          <h3>INCIDENT AUDIT TRAIL & AGENT EVENT LOG</h3>
+        </div>
+        <span class="stream-badge mono" id="stream-status">● LIVE STREAM</span>
+      </div>
+
+      <div class="timeline-log-stream" id="timeline-stream">
+        <!-- Log entries rendered dynamically -->
+      </div>
+    </footer>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
