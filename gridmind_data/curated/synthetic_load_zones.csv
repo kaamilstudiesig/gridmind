@@ -1,0 +1,5 @@
+load_id,node_id,type,base_mw,min_service_pct,peak_service_pct,priority
+LZ01,N07,residential,4.6,0.55,0.78,normal
+LZ02,N08,commercial,5.2,0.6,0.92,normal
+LZ03,N09,industrial,6.8,0.75,0.88,high
+LZ04,N10,hospital,2.0,0.8,0.9,critical

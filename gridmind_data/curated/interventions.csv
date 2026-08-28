@@ -1,0 +1,9 @@
+intervention_id,name,purpose,evidence_basis,risk
+INT01,load_transfer,Shift part of demand to an alternate feeder/path,Supported by utility operational context; simulation action,medium
+INT02,load_restriction,Temporarily reduce non-critical demand,Operational decision-support action,medium
+INT03,feeder_bifurcation,Split an overloaded feeder's load,Public BESCOM work/tender examples,high
+INT04,ht_lt_reconductoring,Increase conductor capacity / reduce losses,KERC/BESCOM documented measure,high
+INT05,dt_refurbishment,"Oil topping, grounding, component replacement",KERC/BESCOM documented measure,high
+INT06,transformer_replacement,Replace failed/unsafe transformer,KERC/BESCOM documented practice,high
+INT07,isolate_equipment,Disconnect failed/unsafe equipment,Standard protection/operations concept,very_high
+INT08,safe_reenergization,Restore supply after required safety checks,KERC safety/technical audit context,very_high
