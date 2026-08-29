@@ -239,17 +239,24 @@ class TestDashboard(unittest.TestCase):
         events = events_data["events"]
 
         self.assertGreater(len(events), 0)
+        valid_types = {
+            "state_inspection",
+            "sandbox_evaluation",
+            "reasoning_summary",
+            "recommendation",
+            "approval_checkpoint",
+            "execution_dispatch",
+            "verification_result",
+        }
         for ev in events:
             self.assertIn("timestamp", ev)
             self.assertIn("stage", ev)
             self.assertIn("event_type", ev)
             self.assertIn("summary", ev)
             self.assertIn("status", ev)
-            # Confirm event types are strictly valid categories
-            self.assertIn(
-                ev["event_type"],
-                ("tool_call", "tool_result", "reasoning_summary", "recommendation", "approval_required", "execution", "verification"),
-            )
+            # Confirm event types are strictly valid categories and NEVER tool_call/tool_result
+            self.assertIn(ev["event_type"], valid_types)
+            self.assertNotIn(ev["event_type"], ("tool_call", "tool_result"))
 
     def test_16_dashboard_handles_pending_approval(self) -> None:
         """16. dashboard handles PENDING_APPROVAL."""
@@ -365,6 +372,53 @@ class TestDashboard(unittest.TestCase):
         self.assertEqual(plan_resp.status_code, 200)
         self.assertEqual(plan_resp.json()["status"], AuditRecordStatus.NOMINAL.value)
         self.assertIsNone(plan_resp.json()["recommended_action"])
+
+    def test_25_no_event_labeled_tool_call_or_tool_result(self) -> None:
+        """25. Asserts no event is ever labeled tool_call or tool_result across all lifecycle phases."""
+        self.service.load_scenario("SC01")
+        plan_resp = self.client.post("/api/commander/plan")
+        inc_id = plan_resp.json()["incident_id"]
+
+        # Phase A: Planned (unexecuted)
+        events_pre = self.client.get(f"/api/events/{inc_id}").json()["events"]
+        for ev in events_pre:
+            self.assertNotEqual(ev["event_type"], "tool_call")
+            self.assertNotEqual(ev["event_type"], "tool_result")
+
+        # Phase B: Approved & Executed
+        self.client.post("/api/commander/approve", json={"incident_id": inc_id})
+        events_post = self.client.get(f"/api/events/{inc_id}").json()["events"]
+        for ev in events_post:
+            self.assertNotEqual(ev["event_type"], "tool_call")
+            self.assertNotEqual(ev["event_type"], "tool_result")
+
+    def test_26_execution_dispatch_absent_when_unexecuted(self) -> None:
+        """26. Asserts execution_dispatch and verification_result are strictly absent before execution."""
+        self.service.load_scenario("SC01")
+        plan_resp = self.client.post("/api/commander/plan")
+        inc_id = plan_resp.json()["incident_id"]
+
+        events = self.client.get(f"/api/events/{inc_id}").json()["events"]
+        event_types = [ev["event_type"] for ev in events]
+        self.assertNotIn("execution_dispatch", event_types)
+        self.assertNotIn("verification_result", event_types)
+        self.assertIn("approval_checkpoint", event_types)
+
+    def test_27_verification_result_present_only_after_execution(self) -> None:
+        """27. Asserts verification_result is derived from actual verification data and present only after execution."""
+        self.service.load_scenario("SC01")
+        plan_resp = self.client.post("/api/commander/plan")
+        inc_id = plan_resp.json()["incident_id"]
+
+        self.client.post("/api/commander/approve", json={"incident_id": inc_id})
+        events = self.client.get(f"/api/events/{inc_id}").json()["events"]
+        verif_events = [ev for ev in events if ev["event_type"] == "verification_result"]
+
+        self.assertEqual(len(verif_events), 1)
+        self.assertEqual(verif_events[0]["status"], "success")
+        self.assertIn("verification", verif_events[0])
+        self.assertTrue(verif_events[0]["verification"]["verified"])
+        self.assertTrue(verif_events[0]["verification"]["post_state_stable"])
 
 
 if __name__ == "__main__":

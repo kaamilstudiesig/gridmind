@@ -545,29 +545,49 @@ class GridMindDashboard {
 
       this.dom.activityFeed.innerHTML = events
         .map((ev) => {
-          let cardTypeClass = "event-tool-call";
-          let tagClass = "tool";
-          if (ev.event_type === "tool_result") {
-            cardTypeClass = "event-tool-result";
-            tagClass = "verdict";
+          let cardTypeClass = "event-inspection";
+          let tagClass = "inspect";
+          let label = ev.event_type;
+
+          if (ev.event_type === "state_inspection") {
+            cardTypeClass = "event-inspection";
+            tagClass = "inspect";
+            label = "STATE INSPECTION";
+          } else if (ev.event_type === "sandbox_evaluation") {
+            cardTypeClass = "event-sandbox";
+            tagClass = "sandbox";
+            label = "SANDBOX EVAL";
           } else if (ev.event_type === "reasoning_summary") {
             cardTypeClass = "event-reasoning";
             tagClass = "reason";
-          } else if (ev.event_type === "approval_required") {
+            label = "SPECIALIST REASONING";
+          } else if (ev.event_type === "recommendation") {
+            cardTypeClass = "event-recommendation";
+            tagClass = "rec";
+            label = "RECOMMENDATION";
+          } else if (ev.event_type === "approval_checkpoint") {
             cardTypeClass = "event-approval";
             tagClass = "gate";
-          } else if (ev.event_type === "verification") {
+            label = "APPROVAL CHECKPOINT";
+          } else if (ev.event_type === "execution_dispatch") {
+            cardTypeClass = "event-execution";
+            tagClass = "exec";
+            label = "EXECUTION DISPATCH";
+          } else if (ev.event_type === "verification_result") {
             cardTypeClass = "event-verification";
             tagClass = "verdict";
+            label = "VERIFICATION RESULT";
           }
 
-          const toolDisplay = ev.tool_name ? `<code>${this.escapeHtml(ev.tool_name)}</code>` : "";
+          const stageDisplay = ev.stage ? `<span style="color: var(--text-muted); font-size: 9px; margin-left: 6px;">[${ev.stage.toUpperCase()}]</span>` : "";
 
           return `
             <div class="activity-event-card ${cardTypeClass}">
               <div class="activity-meta-row">
-                <span class="activity-tag ${tagClass}">${ev.event_type}</span>
-                <span>${toolDisplay}</span>
+                <div>
+                  <span class="activity-tag ${tagClass}">${label}</span>
+                  ${stageDisplay}
+                </div>
                 <span>${this.formatTime(ev.timestamp)}</span>
               </div>
               <div class="activity-summary">${this.escapeHtml(ev.summary)}</div>

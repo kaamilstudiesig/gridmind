@@ -52,6 +52,14 @@ def extract_incident_events(record_dict: dict[str, Any]) -> list[dict[str, Any]]
     """
     Deterministically transforms an actual AuditRecord into chronological observability events.
     Strict Invariant: Emits ONLY events with real evidence in the record. Zero fabricated events.
+    Event Taxonomy:
+    - state_inspection
+    - sandbox_evaluation
+    - reasoning_summary
+    - recommendation
+    - approval_checkpoint
+    - execution_dispatch
+    - verification_result
     """
     events: list[dict[str, Any]] = []
     ts = record_dict.get("created_at") or datetime.now(timezone.utc).isoformat()
@@ -61,33 +69,23 @@ def extract_incident_events(record_dict: dict[str, Any]) -> list[dict[str, Any]]
     pre_info = pre_evidence[0] if pre_evidence else {}
     specialist_results = record_dict.get("specialist_results", {})
 
-    # Stage 1: Incident & State Telemetry Inspection
-    events.append({
-        "timestamp": ts,
-        "stage": "operations",
-        "event_type": "tool_call",
-        "tool_name": "get_incident_state",
-        "summary": f"Inspected active incident state and topology for scenario '{scenario_id}'.",
-        "status": "success",
-    })
-
+    # 1. State Inspection Evidence
     violation_descs = pre_info.get("active_violations", [])
     tripped = pre_info.get("tripped_lines", [])
     overheated = pre_info.get("overheated_transformers", [])
     events.append({
         "timestamp": ts,
         "stage": "operations",
-        "event_type": "tool_result",
-        "tool_name": "get_incident_state",
+        "event_type": "state_inspection",
         "summary": (
-            f"State returned: is_stable={pre_info.get('is_stable', False)}, "
+            f"Active incident state for scenario '{scenario_id}': is_stable={pre_info.get('is_stable', False)}, "
             f"tripped_lines={tripped}, overheated_transformers={overheated}, "
             f"active_violations={len(violation_descs)}."
         ),
         "status": "success",
     })
 
-    # Stage 2 & 3: Operations Reasoning & Candidate Generation
+    # 2. Operations Specialist Reasoning & Candidate Identification
     if "operations" in specialist_results:
         op = specialist_results["operations"]
         if op.get("finding"):
@@ -95,7 +93,6 @@ def extract_incident_events(record_dict: dict[str, Any]) -> list[dict[str, Any]]
                 "timestamp": ts,
                 "stage": "operations",
                 "event_type": "reasoning_summary",
-                "tool_name": None,
                 "summary": f"Operations finding: {op.get('finding')}",
                 "status": "success" if op.get("status") == "ACCEPT" else "rejected",
             })
@@ -106,12 +103,11 @@ def extract_incident_events(record_dict: dict[str, Any]) -> list[dict[str, Any]]
                 "timestamp": ts,
                 "stage": "operations",
                 "event_type": "reasoning_summary",
-                "tool_name": None,
                 "summary": f"Operations proposed {len(candidates)} plausible candidate(s): {', '.join(cand_summaries)}.",
                 "status": "success",
             })
 
-    # Stage 4: Sandbox Evaluations (actual evaluate_action tool calls)
+    # 3. Sandbox Evaluations (from actual safety evaluation evidence)
     if "safety" in specialist_results:
         safety = specialist_results["safety"]
         safety_evidence = safety.get("evidence", [])
@@ -120,44 +116,36 @@ def extract_incident_events(record_dict: dict[str, Any]) -> list[dict[str, Any]]
             cid = action.get("candidate_id", "C")
             atype = action.get("action_type", "unknown")
             params = action.get("parameters", {})
-            events.append({
-                "timestamp": ts,
-                "stage": "safety",
-                "event_type": "tool_call",
-                "tool_name": "evaluate_action",
-                "summary": f"Sandbox simulation requested for candidate {cid} ({atype}) with parameters {params}.",
-                "status": "pending",
-            })
             valid = ev.get("action_valid", False)
             stable = ev.get("is_stable", False)
             temp_t04 = ev.get("predicted_temp_t04")
             viols = ev.get("violations", [])
             is_ok = valid and stable and len(viols) == 0
-            temp_str = f"T04={temp_t04:.2f}°C" if isinstance(temp_t04, (int, float)) else "T04=N/A"
+            temp_str = f"predicted T04={temp_t04:.2f}°C" if isinstance(temp_t04, (int, float)) else "T04=N/A"
             events.append({
                 "timestamp": ts,
                 "stage": "safety",
-                "event_type": "tool_result",
-                "tool_name": "evaluate_action",
+                "event_type": "sandbox_evaluation",
                 "summary": (
-                    f"Sandbox outcome for {cid} ({atype}): valid={valid}, stable={stable}, "
-                    f"{temp_str}, active_violations={len(viols)}."
+                    f"Sandbox evaluation for candidate {cid} ({atype}, params={params}): "
+                    f"valid={valid}, stable={stable}, {temp_str}, active_violations={len(viols)}."
                 ),
                 "status": "success" if is_ok else "rejected",
+                "candidate": action,
+                "evidence": ev,
             })
 
-        # Stage 5: Safety Analysis
+        # 4. Safety Specialist Reasoning
         if safety.get("finding"):
             events.append({
                 "timestamp": ts,
                 "stage": "safety",
                 "event_type": "reasoning_summary",
-                "tool_name": None,
                 "summary": f"Safety evaluation verdict: {safety.get('finding')}",
                 "status": "success" if safety.get("status") == "ACCEPT" else "rejected",
             })
 
-    # Stage 6: Planning Analysis
+    # 5. Planning Specialist Reasoning
     if "planning" in specialist_results:
         planning = specialist_results["planning"]
         if planning.get("finding"):
@@ -165,12 +153,11 @@ def extract_incident_events(record_dict: dict[str, Any]) -> list[dict[str, Any]]
                 "timestamp": ts,
                 "stage": "planning",
                 "event_type": "reasoning_summary",
-                "tool_name": None,
                 "summary": f"Planning assessment: {planning.get('finding')}",
                 "status": "success",
             })
 
-    # Stage 7: Commander Recommendation
+    # 6. Commander Synthesized Recommendation
     rec_action = record_dict.get("recommended_action")
     status_str = record_dict.get("status", "")
     if rec_action:
@@ -178,9 +165,8 @@ def extract_incident_events(record_dict: dict[str, Any]) -> list[dict[str, Any]]
             "timestamp": ts,
             "stage": "commander",
             "event_type": "recommendation",
-            "tool_name": None,
             "summary": (
-                f"Commander synthesized recommendation: {rec_action.get('action_type')} "
+                f"Commander recommendation: {rec_action.get('action_type')} "
                 f"({rec_action.get('candidate_id', '')}) with parameters {rec_action.get('parameters', {})}."
             ),
             "status": "success",
@@ -190,28 +176,25 @@ def extract_incident_events(record_dict: dict[str, Any]) -> list[dict[str, Any]]
             "timestamp": ts,
             "stage": "commander",
             "event_type": "recommendation",
-            "tool_name": None,
             "summary": f"No operational action recommended. Incident status set to '{status_str}'.",
             "status": "rejected" if status_str in ("NO_SAFE_ACTION", "ESCALATED") else "success",
         })
 
-    # Stage 8: Human Approval Checkpoint
+    # 7. Human Approval Checkpoint
     approval_data = record_dict.get("approval", {})
     if status_str == AuditRecordStatus.PENDING_APPROVAL.value:
         events.append({
             "timestamp": ts,
             "stage": "approval",
-            "event_type": "approval_required",
-            "tool_name": None,
-            "summary": "Execution paused at PENDING_APPROVAL gate. Awaiting explicit operator authorization.",
+            "event_type": "approval_checkpoint",
+            "summary": "Execution paused at PENDING_APPROVAL checkpoint. Awaiting explicit operator authorization.",
             "status": "pending",
         })
     elif approval_data.get("approved") is True:
         events.append({
             "timestamp": approval_data.get("timestamp", updated_ts),
             "stage": "approval",
-            "event_type": "approval_required",
-            "tool_name": None,
+            "event_type": "approval_checkpoint",
             "summary": (
                 f"Operator '{approval_data.get('approved_by')}' approved intervention. "
                 f"Reason: {approval_data.get('reason') or 'Standard operating procedure'}."
@@ -222,8 +205,7 @@ def extract_incident_events(record_dict: dict[str, Any]) -> list[dict[str, Any]]
         events.append({
             "timestamp": approval_data.get("timestamp", updated_ts),
             "stage": "approval",
-            "event_type": "approval_required",
-            "tool_name": None,
+            "event_type": "approval_checkpoint",
             "summary": (
                 f"Operator '{approval_data.get('approved_by')}' rejected intervention. "
                 f"Reason: {approval_data.get('reason') or 'Operator override'}."
@@ -231,17 +213,17 @@ def extract_incident_events(record_dict: dict[str, Any]) -> list[dict[str, Any]]
             "status": "rejected",
         })
 
-    # Stage 9: Live Execution & Post-Action Verification
+    # 8. Execution Dispatch (emitted ONLY when execution actually occurred or was rejected)
     execution_data = record_dict.get("execution", {})
     if execution_data.get("executed") is True:
         events.append({
             "timestamp": updated_ts,
             "stage": "execution",
-            "event_type": "execution",
-            "tool_name": "execute_action",
-            "summary": f"Dispatched authorized action '{rec_action.get('action_type') if rec_action else ''}' to live grid.",
+            "event_type": "execution_dispatch",
+            "summary": f"Dispatched authorized action '{rec_action.get('action_type') if rec_action else ''}' to live grid engine.",
             "status": "success",
         })
+        # 9. Verification Result (derived from actual verification data)
         verification_data = record_dict.get("verification", {})
         is_verified = verification_data.get("verified", False)
         post_stable = verification_data.get("post_state_stable", False)
@@ -249,20 +231,19 @@ def extract_incident_events(record_dict: dict[str, Any]) -> list[dict[str, Any]]
         events.append({
             "timestamp": updated_ts,
             "stage": "verification",
-            "event_type": "verification",
-            "tool_name": "get_grid_state",
+            "event_type": "verification_result",
             "summary": (
                 f"Post-action verification: verified={is_verified}, post_state_stable={post_stable}, "
                 f"remaining_violations={len(post_viols)}. Status={status_str}."
             ),
             "status": "success" if is_verified else "failed",
+            "verification": verification_data,
         })
     elif status_str == AuditRecordStatus.EXECUTION_REJECTED.value:
         events.append({
             "timestamp": updated_ts,
             "stage": "execution",
-            "event_type": "execution",
-            "tool_name": "execute_action",
+            "event_type": "execution_dispatch",
             "summary": f"Execution rejected by simulator validation: {execution_data.get('response', {}).get('error_message') or 'Action rejected'}.",
             "status": "failed",
         })
