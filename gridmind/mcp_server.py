@@ -16,7 +16,7 @@ Architecture:
 from __future__ import annotations
 
 from typing import Any, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 import mcp.types as types
 from mcp.server.mcpserver import MCPServer
 
@@ -29,6 +29,12 @@ from gridmind.service import GridMindService
 # =====================================================================
 
 class LoadRestrictionParams(BaseModel):
+    """
+    Schema for load restriction (demand curtailment) action.
+    Applies a numeric percentage reduction (0.0 to 100.0) to the target node or load zone.
+    For example: 15.0 means 15% reduction (NOT 0.15%).
+    Ambiguous string representations (e.g. "15" or "0.15") and non-numeric strings are rejected.
+    """
     target: str = Field(
         ...,
         description="Target node ID or load zone ID to restrict (e.g. 'N08' or 'LZ02')",
@@ -37,8 +43,26 @@ class LoadRestrictionParams(BaseModel):
         ...,
         ge=0.0,
         le=100.0,
-        description="Percentage reduction to apply to zone demand (0.0 to 100.0)",
+        description=(
+            "Percentage reduction to apply to zone demand as a numeric value between 0.0 and 100.0 "
+            "(e.g., 15.0 means 15% reduction, NOT 0.15%). String values like '15' or '0.15' are rejected."
+        ),
     )
+
+    @field_validator("reduction_pct", mode="before")
+    @classmethod
+    def validate_reduction_pct_numeric(cls, v: Any) -> float:
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            raise ValueError(
+                f"'reduction_pct' must be a numeric value between 0.0 and 100.0 (e.g. 15.0 means 15% reduction). "
+                f"String or non-numeric values such as {v!r} are rejected."
+            )
+        val = float(v)
+        if val < 0.0 or val > 100.0:
+            raise ValueError(
+                f"'reduction_pct' must be between 0.0 and 100.0 (e.g. 15.0 means 15% reduction), got {val}"
+            )
+        return val
 
 
 class LoadTransferParams(BaseModel):

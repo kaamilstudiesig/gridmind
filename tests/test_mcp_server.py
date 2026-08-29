@@ -394,6 +394,70 @@ class TestMCPServer(unittest.IsolatedAsyncioTestCase):
         self.assertIn("CRITICAL", res_exec_crit["error_message"])
         self.assertIn("LZ04", res_exec_crit["critical_load_service_pct"])
 
+    async def test_20_reduction_pct_numeric_percentage_and_string_rejection(self) -> None:
+        """Tests that reduction_pct is explicitly interpreted as a numeric percentage (0-100) and strings are rejected."""
+        await self._call_tool_json("load_scenario", {"scenario_id": "SC01"})
+
+        # 1. 15 -> 15% reduction (T04 cools to 97.55°C, stable grid)
+        res_15 = await self._call_tool_json(
+            "evaluate_action",
+            {
+                "action_type": "load_restriction",
+                "parameters": {"target": "N08", "reduction_pct": 15},
+            },
+        )
+        self.assertTrue(res_15["action_valid"])
+        self.assertTrue(res_15["is_stable"])
+        self.assertAlmostEqual(res_15["predicted_transformer_temperatures_c"]["T04"], 97.55, delta=0.2)
+
+        # 2. 5 -> 5% reduction (valid reduction, T04 cools to 107.45°C)
+        res_5 = await self._call_tool_json(
+            "evaluate_action",
+            {
+                "action_type": "load_restriction",
+                "parameters": {"target": "N08", "reduction_pct": 5},
+            },
+        )
+        self.assertTrue(res_5["action_valid"])
+        self.assertTrue(res_5["is_stable"])
+        self.assertAlmostEqual(res_5["predicted_transformer_temperatures_c"]["T04"], 107.45, delta=0.2)
+
+        # 3. 0.15 -> 0.15% reduction (NOT 15%, so T04 remains overheated at 112.49°C)
+        res_015_float = await self._call_tool_json(
+            "evaluate_action",
+            {
+                "action_type": "load_restriction",
+                "parameters": {"target": "N08", "reduction_pct": 0.15},
+            },
+        )
+        self.assertTrue(res_015_float["action_valid"])
+        self.assertFalse(res_015_float["is_stable"])
+        self.assertAlmostEqual(res_015_float["predicted_transformer_temperatures_c"]["T04"], 112.49, delta=0.2)
+
+        # 4. "15" string -> REJECTED
+        res_15_str = await self._call_tool_json(
+            "evaluate_action",
+            {
+                "action_type": "load_restriction",
+                "parameters": {"target": "N08", "reduction_pct": "15"},
+            },
+        )
+        self.assertFalse(res_15_str["action_valid"])
+        self.assertIn("rejection_reason", res_15_str)
+        self.assertIn("numeric", res_15_str["rejection_reason"])
+
+        # 5. "0.15" string -> REJECTED
+        res_015_str = await self._call_tool_json(
+            "evaluate_action",
+            {
+                "action_type": "load_restriction",
+                "parameters": {"target": "N08", "reduction_pct": "0.15"},
+            },
+        )
+        self.assertFalse(res_015_str["action_valid"])
+        self.assertIn("rejection_reason", res_015_str)
+        self.assertIn("numeric", res_015_str["rejection_reason"])
+
 
 if __name__ == "__main__":
     unittest.main()

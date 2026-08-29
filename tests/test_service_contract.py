@@ -255,6 +255,61 @@ class TestServiceContract(unittest.TestCase):
         self.assertTrue(eval_transfer_100kw.action_valid)
         self.assertAlmostEqual(eval_transfer_100kw.predicted_line_loadings_pct["L08"], 10.0, delta=0.1)
 
+    def test_reduction_pct_numeric_percentage_semantics(self) -> None:
+        """Tests that load_restriction interprets reduction_pct as numeric percentage and rejects strings/booleans."""
+        self.service.load_scenario("SC01")
+
+        # 1. 15 -> 15% reduction
+        eval_15 = self.service.evaluate_action(
+            ActionRequest(
+                action_type="load_restriction",
+                parameters={"target": "N08", "reduction_pct": 15},
+            )
+        )
+        self.assertTrue(eval_15.action_valid)
+        self.assertTrue(eval_15.is_stable)
+        self.assertAlmostEqual(eval_15.predicted_transformer_temperatures_c["T04"], 97.55, delta=0.2)
+
+        # 2. 5 -> 5% reduction
+        eval_5 = self.service.evaluate_action(
+            ActionRequest(
+                action_type="load_restriction",
+                parameters={"target": "N08", "reduction_pct": 5},
+            )
+        )
+        self.assertTrue(eval_5.action_valid)
+        self.assertTrue(eval_5.is_stable)
+        self.assertAlmostEqual(eval_5.predicted_transformer_temperatures_c["T04"], 107.45, delta=0.2)
+
+        # 3. 0.15 -> 0.15% reduction (NOT 15%, so T04 remains overheated at 112.49°C)
+        eval_015 = self.service.evaluate_action(
+            ActionRequest(
+                action_type="load_restriction",
+                parameters={"target": "N08", "reduction_pct": 0.15},
+            )
+        )
+        self.assertTrue(eval_015.action_valid)
+        self.assertFalse(eval_015.is_stable)
+        self.assertAlmostEqual(eval_015.predicted_transformer_temperatures_c["T04"], 112.49, delta=0.2)
+
+        # 4. "15" string -> rejected
+        eval_15_str = self.service.evaluate_action(
+            ActionRequest(
+                action_type="load_restriction",
+                parameters={"target": "N08", "reduction_pct": "15"},
+            )
+        )
+        self.assertFalse(eval_15_str.action_valid)
+
+        # 5. "0.15" string -> rejected
+        eval_015_str = self.service.evaluate_action(
+            ActionRequest(
+                action_type="load_restriction",
+                parameters={"target": "N08", "reduction_pct": "0.15"},
+            )
+        )
+        self.assertFalse(eval_015_str.action_valid)
+
 
 if __name__ == "__main__":
     unittest.main()

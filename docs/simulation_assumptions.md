@@ -85,7 +85,7 @@ A grid state is declared **Stable** (`is_stable = True`) if and only if **zero**
 ## 6. Action Taxonomy & Guardrails
 
 - **Immediate Operational Control Actions**:
-  - `load_restriction`: Curtails demand by `reduction_pct` at a specified load zone (parameters: `target`, `reduction_pct`).
+  - `load_restriction`: Curtails demand by `reduction_pct` at a specified load zone (parameters: `target`, `reduction_pct` as a numeric percentage in range 0–100, e.g. `15.0` means $15\%$ reduction, NOT $0.15\%$. String values like `"15"` or `"0.15"` are rejected).
   - `close_tie_line`: Closes an available tie line (`line_id`, e.g. `L08`). In the current GridMind model, closing `L08` results in the simulator's modeled default $0.10\text{ MW}$ ($100\text{ kW}$) power transfer. This is a non-parameterized switching action. **Rejected** if `L08` is `TRIPPED` / `ISOLATED` or already `CLOSED`.
   - `load_transfer`: Explicitly requested parameterized power transfer (parameters: `line_id`, `source`, `destination`, `transfer_mw`). Currently supported route is `L08` between `N08` (Feeder-B) and `N04` (Feeder-A). **Rejected** if `transfer_mw` exceeds line capacity ($1.0\text{ MW}$), if `L08` is `TRIPPED` / `ISOLATED`, or if unsupported endpoints are targeted.
   - `isolate_transformer`: Opens transformer breaker, shifting downstream load to surviving bank units (parameters: `transformer_id`).
