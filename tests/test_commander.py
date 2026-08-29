@@ -40,9 +40,17 @@ class TestGridMindCommander(unittest.TestCase):
         self.db_path = os.path.join(self.tmp_dir.name, "test_audit.db")
         self.audit_store = AuditStore(db_path=self.db_path)
         self.service = GridMindService(data_dir="gridmind_data/curated")
+        self.mock_llm = MagicMock(spec=LLMClient)
+        self.mock_llm.generate_narrative.side_effect = (
+            lambda agent_role, status, candidates, evidence, risks, default_finding, default_recommendation: (
+                default_finding,
+                default_recommendation,
+            )
+        )
         self.commander = GridMindCommander(
             service=self.service,
             audit_store=self.audit_store,
+            llm_client=self.mock_llm,
         )
 
     def tearDown(self) -> None:
@@ -54,7 +62,7 @@ class TestGridMindCommander(unittest.TestCase):
         inc_state = self.service.get_incident_state()
         grid_state = self.service.get_grid_state()
 
-        op_spec = OperationsSpecialist()
+        op_spec = OperationsSpecialist(llm_client=self.mock_llm)
         res = op_spec.analyze(inc_state, grid_state)
 
         self.assertEqual(res.agent, SpecialistRole.OPERATIONS.value)
@@ -91,7 +99,8 @@ class TestGridMindCommander(unittest.TestCase):
         commander = GridMindCommander(
             service=self.service,
             audit_store=self.audit_store,
-            operations_specialist=EscalatingOperations(),
+            operations_specialist=EscalatingOperations(llm_client=self.mock_llm),
+            llm_client=self.mock_llm,
         )
 
         plan = commander.plan_incident_response(incident_id="INC-ESC-01")
@@ -129,7 +138,8 @@ class TestGridMindCommander(unittest.TestCase):
         commander = GridMindCommander(
             service=self.service,
             audit_store=self.audit_store,
-            safety_specialist=EscalatingSafety(),
+            safety_specialist=EscalatingSafety(llm_client=self.mock_llm),
+            llm_client=self.mock_llm,
         )
 
         plan = commander.plan_incident_response(incident_id="INC-ESC-02")
@@ -161,7 +171,8 @@ class TestGridMindCommander(unittest.TestCase):
         commander = GridMindCommander(
             service=self.service,
             audit_store=self.audit_store,
-            safety_specialist=RejectAllSafety(),
+            safety_specialist=RejectAllSafety(llm_client=self.mock_llm),
+            llm_client=self.mock_llm,
         )
 
         plan = commander.plan_incident_response(incident_id="INC-REJ-01")
@@ -249,7 +260,7 @@ class TestGridMindCommander(unittest.TestCase):
     def test_07_planning_never_executes(self) -> None:
         """Tests that PlanningSpecialist only generates planning recommendations and never mutates grid state."""
         self.service.load_scenario("SC01")
-        plan_spec = PlanningSpecialist()
+        plan_spec = PlanningSpecialist(llm_client=self.mock_llm)
         inc_state = self.service.get_incident_state()
 
         res = plan_spec.analyze_long_term(inc_state, [])
@@ -339,7 +350,8 @@ class TestGridMindCommander(unittest.TestCase):
         commander = GridMindCommander(
             service=self.service,
             audit_store=self.audit_store,
-            operations_specialist=OverflowOperations(),
+            operations_specialist=OverflowOperations(llm_client=self.mock_llm),
+            llm_client=self.mock_llm,
         )
 
         with self.assertRaises(ValueError):
@@ -475,6 +487,37 @@ class TestGridMindCommander(unittest.TestCase):
         self.assertIn("operational candidates", plan.specialist_results["operations"].finding)
         self.assertIn("T04", plan.specialist_results["planning"].finding)
         self.assertIn("AuditRecord", str(plan.audit_record))
+
+    def test_16_missing_credentials_triggers_degraded_mode_gracefully(self) -> None:
+        """Tests that missing API credentials logs [DEGRADED_MODE] and degrades gracefully without crashing."""
+        unconfigured_llm = LLMClient()
+        unconfigured_llm.api_key = None
+
+        with self.assertLogs("gridmind.llm", level="WARNING") as log_cm:
+            finding, rec = unconfigured_llm.generate_narrative(
+                agent_role="operations",
+                status="ACCEPT",
+                candidates=[],
+                evidence=[],
+                risks=[],
+                default_finding="Default finding text",
+                default_recommendation="Default recommendation text",
+            )
+
+        self.assertTrue(any("[DEGRADED_MODE]" in record.getMessage() for record in log_cm.records))
+        self.assertEqual(finding, "Default finding text")
+        self.assertEqual(rec, "Default recommendation text")
+
+        # Confirm Commander pipeline succeeds end-to-end without crashing
+        self.service.load_scenario("SC01-B")
+        commander = GridMindCommander(
+            service=self.service,
+            audit_store=self.audit_store,
+            llm_client=unconfigured_llm,
+        )
+        plan = commander.plan_incident_response(incident_id="INC-NO-KEY-01")
+        self.assertEqual(plan.status, AuditRecordStatus.PENDING_APPROVAL.value)
+        self.assertIsNotNone(plan.recommended_action)
 
 
 if __name__ == "__main__":

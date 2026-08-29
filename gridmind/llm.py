@@ -2,7 +2,8 @@
 LLM Client for GridMind Specialist narrative synthesis.
 Calls OpenRouter/OpenAI-compatible endpoints to synthesize operator findings
 and recommendations from deterministic telemetry and constraint evaluation.
-Falls back to deterministic templates under logged [DEGRADED_MODE].
+Falls back to deterministic templates under logged [DEGRADED_MODE] ONLY upon
+caught API/network failures after retries.
 """
 
 from __future__ import annotations
@@ -10,9 +11,16 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from typing import Any, Optional
 
 import httpx
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 logger = logging.getLogger("gridmind.llm")
 
@@ -20,7 +28,7 @@ logger = logging.getLogger("gridmind.llm")
 class LLMClient:
     """
     Client for synthesizing natural language operator findings and recommendations.
-    Uses OpenAI/OpenRouter-compatible chat completions.
+    Uses OpenAI/OpenRouter-compatible chat completions via standard environment variables.
     """
 
     def __init__(
@@ -28,7 +36,7 @@ class LLMClient:
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
         model: Optional[str] = None,
-        timeout: float = 10.0,
+        timeout: float = 12.0,
         max_retries: int = 2,
     ) -> None:
         self.api_key = (
@@ -47,7 +55,7 @@ class LLMClient:
             model
             or os.environ.get("LLM_MODEL")
             or os.environ.get("OPENROUTER_MODEL")
-            or "openai/gpt-4o-mini"
+            or "openrouter/free"
         )
         self.timeout = timeout
         self.max_retries = max_retries
@@ -64,13 +72,12 @@ class LLMClient:
     ) -> tuple[str, str]:
         """
         Synthesizes (finding, recommendation) for a specialist.
-        If the model call fails or no API key is configured, triggers the [DEGRADED_MODE]
-        fallback and returns (default_finding, default_recommendation).
+        Emits [DEGRADED_MODE] and falls back to deterministic templates if API key
+        is missing or upon caught network/API failures after retries.
         """
         if not self.api_key:
             logger.warning(
-                "[DEGRADED_MODE] No LLM API key configured (OPENROUTER_API_KEY / OPENAI_API_KEY). "
-                "Falling back to deterministic template synthesis for %s.",
+                "[DEGRADED_MODE] Missing LLM API key or configuration. Falling back to deterministic template synthesis for %s.",
                 agent_role,
             )
             return default_finding, default_recommendation
@@ -102,7 +109,6 @@ class LLMClient:
                 },
                 {"role": "user", "content": prompt},
             ],
-            "response_format": {"type": "json_object"},
             "temperature": 0.2,
         }
 
@@ -117,7 +123,12 @@ class LLMClient:
                     )
                     resp.raise_for_status()
                     data = resp.json()
-                    content = data["choices"][0]["message"]["content"]
+                    content = data["choices"][0]["message"]["content"].strip()
+                    # Strip possible markdown code fences (e.g. ```json ... ```)
+                    if "```" in content:
+                        match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", content, re.DOTALL)
+                        if match:
+                            content = match.group(1)
                     parsed = json.loads(content)
                     finding = str(parsed.get("finding", default_finding)).strip()
                     recommendation = str(parsed.get("recommendation", default_recommendation)).strip()
