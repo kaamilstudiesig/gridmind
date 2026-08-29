@@ -108,18 +108,76 @@ class AuditStore:
                 return json.loads(row["record_json"])
         return None
 
-    def list(self, status: Optional[str] = None) -> list[dict[str, Any]]:
-        """Lists AuditRecords, optionally filtered by status, ordered by updated_at DESC."""
+    def get_latest(self, scenario_id: Optional[str] = None) -> Optional[dict[str, Any]]:
+        """Retrieves the most recent AuditRecord, optionally scoped to a scenario_id."""
+        query = "SELECT record_json FROM audit_records"
+        params: list[Any] = []
+        if scenario_id:
+            query += " WHERE scenario_id = ?"
+            params.append(str(scenario_id))
+        query += " ORDER BY updated_at DESC LIMIT 1"
         with self._get_connection() as conn:
-            if status:
-                cursor = conn.execute(
-                    "SELECT record_json FROM audit_records WHERE status = ? ORDER BY updated_at DESC",
-                    (str(status),),
-                )
-            else:
-                cursor = conn.execute(
-                    "SELECT record_json FROM audit_records ORDER BY updated_at DESC"
-                )
+            cursor = conn.execute(query, params)
+            row = cursor.fetchone()
+            if row:
+                return json.loads(row["record_json"])
+        return None
+
+    def get_pending_for_scenario(self, scenario_id: str) -> Optional[dict[str, Any]]:
+        """Retrieves the most recent PENDING_APPROVAL AuditRecord for a specific scenario."""
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                "SELECT record_json FROM audit_records WHERE scenario_id = ? AND status = 'PENDING_APPROVAL' ORDER BY updated_at DESC LIMIT 1",
+                (str(scenario_id),),
+            )
+            row = cursor.fetchone()
+            if row:
+                return json.loads(row["record_json"])
+        return None
+
+    def count(self, scenario_id: Optional[str] = None, status: Optional[str] = None) -> int:
+        """Returns total count of AuditRecords, optionally filtered by scenario_id and status."""
+        query = "SELECT COUNT(*) AS total FROM audit_records"
+        params: list[Any] = []
+        clauses: list[str] = []
+        if scenario_id:
+            clauses.append("scenario_id = ?")
+            params.append(str(scenario_id))
+        if status:
+            clauses.append("status = ?")
+            params.append(str(status))
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        with self._get_connection() as conn:
+            cursor = conn.execute(query, params)
+            row = cursor.fetchone()
+            return int(row["total"]) if row else 0
+
+    def list(
+        self,
+        status: Optional[str] = None,
+        scenario_id: Optional[str] = None,
+        limit: Optional[int] = None,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        """Lists AuditRecords, optionally filtered by status and scenario_id, with optional pagination."""
+        query = "SELECT record_json FROM audit_records"
+        params: list[Any] = []
+        clauses: list[str] = []
+        if status:
+            clauses.append("status = ?")
+            params.append(str(status))
+        if scenario_id:
+            clauses.append("scenario_id = ?")
+            params.append(str(scenario_id))
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY updated_at DESC"
+        if limit is not None:
+            query += " LIMIT ? OFFSET ?"
+            params.extend([int(limit), int(offset)])
+        with self._get_connection() as conn:
+            cursor = conn.execute(query, params)
             rows = cursor.fetchall()
             return [json.loads(r["record_json"]) for r in rows]
 

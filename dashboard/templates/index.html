@@ -96,6 +96,9 @@
     </div>
   </div>
 
+  <!-- History Mode Notification Banner -->
+  <div id="history-mode-banner" class="history-banner" style="display: none;"></div>
+
   <!-- Main Command Center Grid -->
   <main class="dashboard-grid">
 
@@ -317,6 +320,9 @@
             <span class="title-icon" style="background: var(--text-muted);"></span>
             Durable Audit Trail (SQLite)
           </div>
+          <button id="btn-refresh-history" class="btn-action" style="padding: 2px 8px; font-size: 10px; background: rgba(255,255,255,0.06); border: 1px solid var(--border-subtle);">
+            🔄 Refresh
+          </button>
         </div>
         <div class="panel-body">
           <div id="audit-history-list" class="audit-history-list">

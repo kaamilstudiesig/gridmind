@@ -1,18 +1,22 @@
 """
 FastAPI Dashboard Backend for GridMind Command Center.
 Exposes read-side grid telemetry, persistent audit records, actual agent activity events,
-scenario loading, and human-in-the-loop Commander approval delegation.
+scenario loading, and role-based human-in-the-loop Commander approval delegation.
 """
 
 from __future__ import annotations
 
 import argparse
+import asyncio
+from dataclasses import dataclass
 from datetime import datetime, timezone
+import json
 import logging
+import os
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Header, Query, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -32,21 +36,118 @@ TEMPLATES_DIR = BASE_DIR / "templates"
 STATIC_DIR = BASE_DIR / "static"
 
 
+# ==============================================================================
+# Authentication & Role-Based Access Control (RBAC)
+# ==============================================================================
+
+@dataclass
+class AuthenticatedUser:
+    username: str
+    role: str
+    roles: list[str]
+
+
+DEFAULT_AUTH_TOKENS: dict[str, dict[str, Any]] = {
+    "gm-lead-token-secret": {
+        "username": "operator_alice",
+        "role": "operator_lead",
+        "roles": ["viewer", "operator", "operator_lead", "admin"],
+    },
+    "gm-operator-token-secret": {
+        "username": "operator_bob",
+        "role": "operator",
+        "roles": ["viewer", "operator"],
+    },
+    "gm-viewer-token-secret": {
+        "username": "viewer_charlie",
+        "role": "viewer",
+        "roles": ["viewer"],
+    },
+}
+
+
+def get_token_registry() -> dict[str, dict[str, Any]]:
+    """Loads token mapping from GRIDMIND_AUTH_TOKENS env var or falls back to defaults."""
+    env_tokens = os.environ.get("GRIDMIND_AUTH_TOKENS")
+    if env_tokens:
+        try:
+            return json.loads(env_tokens)
+        except Exception as e:
+            logger.warning("Failed to parse GRIDMIND_AUTH_TOKENS JSON (%s); using defaults.", e)
+    return DEFAULT_AUTH_TOKENS
+
+
+def get_current_user(authorization: Optional[str] = Header(default=None)) -> AuthenticatedUser:
+    """
+    Authenticates operator from Bearer token in the Authorization header.
+    Rejects unauthenticated requests with 401.
+    """
+    if not authorization:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing Authorization header. Bearer token required.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    parts = authorization.strip().split()
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid Authorization header format. Expected 'Bearer <token>'.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    token = parts[1]
+    registry = get_token_registry()
+    user_info = registry.get(token)
+    if not user_info:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired bearer token.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    roles = user_info.get("roles", [user_info.get("role", "viewer")])
+    return AuthenticatedUser(
+        username=user_info.get("username", "anonymous_operator"),
+        role=user_info.get("role", "viewer"),
+        roles=roles,
+    )
+
+
+def require_role(required_role: str):
+    """Dependency factory checking that the authenticated user possesses the required role."""
+    def role_checker(user: AuthenticatedUser = Depends(get_current_user)) -> AuthenticatedUser:
+        if required_role not in user.roles:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Forbidden: Operator '{user.username}' lacks required role '{required_role}'.",
+            )
+        return user
+    return role_checker
+
+
+# ==============================================================================
+# Request Models
+# ==============================================================================
+
 class ScenarioLoadRequest(BaseModel):
     scenario_id: str = Field(..., description="Scenario identifier (e.g. SC01, SC01-B, BASE)")
 
 
 class ApprovalRequest(BaseModel):
-    approved_by: Optional[str] = Field(default="operator_lead", description="Operator identifier")
-    reason: Optional[str] = Field(default="Operator verified safety constraints", description="Approval justification")
+    reason: Optional[str] = Field(default="Authorized by control room operator", description="Approval justification")
     incident_id: Optional[str] = Field(default=None, description="Optional target incident ID")
 
 
 class RejectionRequest(BaseModel):
-    approved_by: Optional[str] = Field(default="operator_lead", description="Operator identifier")
     reason: Optional[str] = Field(default="Rejected by operator override", description="Rejection rationale")
     incident_id: Optional[str] = Field(default=None, description="Optional target incident ID")
 
+
+# ==============================================================================
+# Observability Event Extraction
+# ==============================================================================
 
 def extract_incident_events(record_dict: dict[str, Any]) -> list[dict[str, Any]]:
     """
@@ -62,28 +163,29 @@ def extract_incident_events(record_dict: dict[str, Any]) -> list[dict[str, Any]]
     - verification_result
     """
     events: list[dict[str, Any]] = []
-    ts = record_dict.get("created_at") or datetime.now(timezone.utc).isoformat()
+    ts = record_dict.get("created_at") or ""
     updated_ts = record_dict.get("updated_at") or ts
     scenario_id = record_dict.get("scenario_id", "UNKNOWN")
     pre_evidence = record_dict.get("pre_state_evidence", [])
-    pre_info = pre_evidence[0] if pre_evidence else {}
     specialist_results = record_dict.get("specialist_results", {})
 
-    # 1. State Inspection Evidence
-    violation_descs = pre_info.get("active_violations", [])
-    tripped = pre_info.get("tripped_lines", [])
-    overheated = pre_info.get("overheated_transformers", [])
-    events.append({
-        "timestamp": ts,
-        "stage": "operations",
-        "event_type": "state_inspection",
-        "summary": (
-            f"Active incident state for scenario '{scenario_id}': is_stable={pre_info.get('is_stable', False)}, "
-            f"tripped_lines={tripped}, overheated_transformers={overheated}, "
-            f"active_violations={len(violation_descs)}."
-        ),
-        "status": "success",
-    })
+    # 1. State Inspection Evidence (emitted ONLY when actual pre_state_evidence exists)
+    if pre_evidence and isinstance(pre_evidence, list) and len(pre_evidence) > 0 and isinstance(pre_evidence[0], dict) and pre_evidence[0]:
+        pre_info = pre_evidence[0]
+        violation_descs = pre_info.get("active_violations", [])
+        tripped = pre_info.get("tripped_lines", [])
+        overheated = pre_info.get("overheated_transformers", [])
+        events.append({
+            "timestamp": ts,
+            "stage": "operations",
+            "event_type": "state_inspection",
+            "summary": (
+                f"Active incident state for scenario '{scenario_id}': is_stable={pre_info.get('is_stable', False)}, "
+                f"tripped_lines={tripped}, overheated_transformers={overheated}, "
+                f"active_violations={len(violation_descs)}."
+            ),
+            "status": "success",
+        })
 
     # 2. Operations Specialist Reasoning & Candidate Identification
     if "operations" in specialist_results:
@@ -192,7 +294,7 @@ def extract_incident_events(record_dict: dict[str, Any]) -> list[dict[str, Any]]
         })
     elif approval_data.get("approved") is True:
         events.append({
-            "timestamp": approval_data.get("timestamp", updated_ts),
+            "timestamp": approval_data.get("timestamp") or updated_ts,
             "stage": "approval",
             "event_type": "approval_checkpoint",
             "summary": (
@@ -203,7 +305,7 @@ def extract_incident_events(record_dict: dict[str, Any]) -> list[dict[str, Any]]
         })
     elif status_str == AuditRecordStatus.REJECTED_BY_HUMAN.value or approval_data.get("approved") is False:
         events.append({
-            "timestamp": approval_data.get("timestamp", updated_ts),
+            "timestamp": approval_data.get("timestamp") or updated_ts,
             "stage": "approval",
             "event_type": "approval_checkpoint",
             "summary": (
@@ -250,6 +352,10 @@ def extract_incident_events(record_dict: dict[str, Any]) -> list[dict[str, Any]]
 
     return events
 
+
+# ==============================================================================
+# FastAPI Application Factory
+# ==============================================================================
 
 def create_dashboard_app(
     service: Optional[GridMindService] = None,
@@ -298,20 +404,27 @@ def create_dashboard_app(
 
     @app.get("/api/status")
     async def get_status():
-        """Returns aggregated status: active scenario, grid telemetry, incident state, and latest audit record."""
+        """
+        Returns aggregated status: active scenario, grid telemetry, incident state,
+        and latest audit record SCOPED TO THE ACTIVE SCENARIO.
+        Uses efficient SQL queries to avoid materializing the entire audit table.
+        """
+        active_sc = app_service.active_scenario_id
         grid_state = app_service.get_grid_state()
         inc_state = app_service.get_incident_state()
-        records = app_audit_store.list()
-        latest_record = records[0] if records else None
         state_revision = app_service.get_state_revision()
 
+        # Retrieve latest record for active scenario efficiently
+        latest_record = app_audit_store.get_latest(scenario_id=active_sc)
+        total_count = app_audit_store.count()
+
         return JSONResponse({
-            "scenario_id": app_service.active_scenario_id,
+            "scenario_id": active_sc,
             "state_revision": state_revision,
             "grid_state": grid_state.to_dict(),
             "incident_state": inc_state.to_dict(),
             "latest_record": latest_record,
-            "total_audit_records": len(records),
+            "total_audit_records": total_count,
             "commander_status": latest_record.get("status") if latest_record else "NOMINAL",
         })
 
@@ -325,10 +438,27 @@ def create_dashboard_app(
         return JSONResponse({"incident_id": incident_id, "events": events})
 
     @app.get("/api/audit/records")
-    async def list_audit_records(status: Optional[str] = None):
-        """Retrieves all AuditRecords from durable SQLite storage."""
-        records = app_audit_store.list(status=status)
-        return JSONResponse({"records": records, "count": len(records)})
+    async def list_audit_records(
+        status: Optional[str] = Query(default=None),
+        scenario_id: Optional[str] = Query(default=None),
+        limit: int = Query(default=20, ge=1, le=100),
+        offset: int = Query(default=0, ge=0),
+    ):
+        """Retrieves paginated AuditRecords from durable SQLite storage."""
+        records = app_audit_store.list(
+            status=status,
+            scenario_id=scenario_id,
+            limit=limit,
+            offset=offset,
+        )
+        total = app_audit_store.count(status=status, scenario_id=scenario_id)
+        return JSONResponse({
+            "records": records,
+            "count": len(records),
+            "limit": limit,
+            "offset": offset,
+            "total": total,
+        })
 
     @app.get("/api/audit/records/{incident_id}")
     async def get_audit_record(incident_id: str):
@@ -358,10 +488,18 @@ def create_dashboard_app(
             "active": app_service.active_scenario_id,
         })
 
+    # ==========================================================================
+    # State-Changing Endpoints (Protected by Authentication & RBAC)
+    # ==========================================================================
+
     @app.post("/api/scenario/load")
-    async def load_scenario(req: ScenarioLoadRequest):
+    async def load_scenario(
+        req: ScenarioLoadRequest,
+        user: AuthenticatedUser = Depends(require_role("operator")),
+    ):
         """
         Loads and resets ONLY the requested scenario.
+        Protected: Requires 'operator' or 'admin' role.
         Guarantees: Does NOT automatically trigger Commander planning, does NOT execute anything.
         """
         try:
@@ -374,51 +512,82 @@ def create_dashboard_app(
                 "state_revision": state_revision,
                 "incident_state": inc_state.to_dict(),
                 "grid_state": grid_state.to_dict(),
+                "operator": user.username,
                 "message": f"Loaded scenario '{app_service.active_scenario_id}'. Ready for investigation.",
             })
         except ValueError as err:
             raise HTTPException(status_code=400, detail=str(err))
 
     @app.post("/api/commander/plan")
-    async def trigger_plan():
-        """Triggers the full Commander multi-specialist investigation and planning cycle."""
+    async def trigger_plan(
+        user: AuthenticatedUser = Depends(require_role("operator")),
+    ):
+        """
+        Triggers the Commander multi-specialist investigation and planning cycle.
+        Protected: Requires 'operator' role.
+        Dispatches synchronous planning work to a worker thread via asyncio.to_thread
+        to avoid blocking the FastAPI event loop.
+        """
         try:
-            plan_result = app_commander.plan_incident_response()
+            plan_result = await asyncio.to_thread(app_commander.plan_incident_response)
             return JSONResponse(plan_result.to_dict())
         except Exception as err:
             logger.exception("Error during commander planning: %s", err)
             raise HTTPException(status_code=500, detail=str(err))
 
     @app.post("/api/commander/approve")
-    async def approve_action(req: ApprovalRequest):
+    async def approve_action(
+        req: ApprovalRequest,
+        user: AuthenticatedUser = Depends(require_role("operator_lead")),
+    ):
         """
         Human-in-the-Loop authorization gate.
-        Delegates strictly to GridMindCommander.approve_and_execute().
-        Guarantees: Dashboard cannot modify action_type or parameters, cannot bypass validation.
+        Protected: Requires 'operator_lead' or 'admin' role.
+        Derives approved_by strictly from authenticated operator identity (prevents spoofing).
+        Enforces scenario isolation: rejects cross-scenario execution attempts.
+        Runs synchronous execution in worker thread via asyncio.to_thread.
         """
+        active_sc = app_service.active_scenario_id
         target_id = req.incident_id
-        if not target_id:
-            records = app_audit_store.list(status=AuditRecordStatus.PENDING_APPROVAL.value)
-            if not records:
+
+        if target_id:
+            # Verify incident belongs to active scenario
+            existing_rec = app_audit_store.get(target_id)
+            if not existing_rec:
+                raise HTTPException(status_code=404, detail=f"Incident '{target_id}' not found")
+            if existing_rec.get("scenario_id") != active_sc:
                 raise HTTPException(
                     status_code=400,
-                    detail="No incident currently in PENDING_APPROVAL status to approve."
+                    detail=(
+                        f"Cannot approve incident '{target_id}' belonging to scenario '{existing_rec.get('scenario_id')}' "
+                        f"while active scenario is '{active_sc}'."
+                    ),
                 )
-            target_id = records[0]["incident_id"]
+        else:
+            # Resolve pending record strictly for the active scenario
+            pending_rec = app_audit_store.get_pending_for_scenario(active_sc)
+            if not pending_rec:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"No incident currently in PENDING_APPROVAL for active scenario '{active_sc}'."
+                )
+            target_id = pending_rec["incident_id"]
 
         try:
             approval_payload = {
                 "approved": True,
-                "approved_by": req.approved_by or "operator_lead",
+                "approved_by": user.username,  # Derived strictly from authenticated identity
                 "reason": req.reason or "Authorized by control room operator",
             }
-            record = app_commander.approve_and_execute(
+            record = await asyncio.to_thread(
+                app_commander.approve_and_execute,
                 approval=approval_payload,
                 incident_id=target_id,
             )
             return JSONResponse({
                 "success": True,
                 "record": record.to_dict(),
+                "operator": user.username,
                 "message": f"Incident '{target_id}' executed with final status: '{record.status}'",
             })
         except ValueError as err:
@@ -428,34 +597,55 @@ def create_dashboard_app(
             raise HTTPException(status_code=500, detail=str(err))
 
     @app.post("/api/commander/reject")
-    async def reject_action(req: RejectionRequest):
+    async def reject_action(
+        req: RejectionRequest,
+        user: AuthenticatedUser = Depends(require_role("operator_lead")),
+    ):
         """
         Human rejection pathway.
-        Delegates strictly to GridMindCommander.approve_and_execute(approved=False).
+        Protected: Requires 'operator_lead' or 'admin' role.
+        Derives approved_by strictly from authenticated operator identity.
+        Enforces scenario isolation: rejects cross-scenario rejection attempts.
         """
+        active_sc = app_service.active_scenario_id
         target_id = req.incident_id
-        if not target_id:
-            records = app_audit_store.list(status=AuditRecordStatus.PENDING_APPROVAL.value)
-            if not records:
+
+        if target_id:
+            existing_rec = app_audit_store.get(target_id)
+            if not existing_rec:
+                raise HTTPException(status_code=404, detail=f"Incident '{target_id}' not found")
+            if existing_rec.get("scenario_id") != active_sc:
                 raise HTTPException(
                     status_code=400,
-                    detail="No incident currently in PENDING_APPROVAL status to reject."
+                    detail=(
+                        f"Cannot reject incident '{target_id}' belonging to scenario '{existing_rec.get('scenario_id')}' "
+                        f"while active scenario is '{active_sc}'."
+                    ),
                 )
-            target_id = records[0]["incident_id"]
+        else:
+            pending_rec = app_audit_store.get_pending_for_scenario(active_sc)
+            if not pending_rec:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"No incident currently in PENDING_APPROVAL for active scenario '{active_sc}'."
+                )
+            target_id = pending_rec["incident_id"]
 
         try:
             approval_payload = {
                 "approved": False,
-                "approved_by": req.approved_by or "operator_lead",
+                "approved_by": user.username,  # Derived strictly from authenticated identity
                 "reason": req.reason or "Operator override / rejected",
             }
-            record = app_commander.approve_and_execute(
+            record = await asyncio.to_thread(
+                app_commander.approve_and_execute,
                 approval=approval_payload,
                 incident_id=target_id,
             )
             return JSONResponse({
                 "success": True,
                 "record": record.to_dict(),
+                "operator": user.username,
                 "message": f"Incident '{target_id}' rejected by human operator.",
             })
         except ValueError as err:

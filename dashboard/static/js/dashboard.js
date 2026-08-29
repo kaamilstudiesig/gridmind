@@ -1,6 +1,7 @@
 /**
  * GridMind Command Center: Operational Telemetry & Agent Observability Client.
- * ES Module implementation. Zero external build dependencies.
+ * ES Module implementation with authenticated state-changing actions,
+ * scenario isolation, bounded audit pagination, and history-mode preservation.
  */
 
 class GridMindDashboard {
@@ -10,11 +11,15 @@ class GridMindDashboard {
     this.activeScenario = "SC01";
     this.activeIncidentId = null;
     this.selectedRecordId = null;
+    this.mode = "live"; // "live" | "history"
+    this.authToken = localStorage.getItem("gridmind_auth_token") || "gm-lead-token-secret";
     this.isPlanning = false;
     this.isSubmittingApproval = false;
+    this.auditPageSize = 20;
+    this.auditOffset = 0;
 
     this.dom = {
-      // Header metrics
+      // Header metrics & Auth
       freqVal: document.getElementById("metric-freq"),
       tempVal: document.getElementById("metric-temp"),
       demandVal: document.getElementById("metric-demand"),
@@ -25,6 +30,9 @@ class GridMindDashboard {
       
       // Stage tracker
       stageSteps: document.querySelectorAll(".stage-step"),
+
+      // History mode banner
+      historyBanner: document.getElementById("history-mode-banner"),
 
       // Panels
       incidentTitle: document.getElementById("incident-title"),
@@ -49,6 +57,7 @@ class GridMindDashboard {
       activityFeed: document.getElementById("activity-feed-list"),
       auditHistoryList: document.getElementById("audit-history-list"),
       postVerificationBox: document.getElementById("post-verification-box"),
+      btnRefreshHistory: document.getElementById("btn-refresh-history"),
     };
 
     this.init();
@@ -57,6 +66,7 @@ class GridMindDashboard {
   async init() {
     this.bindEvents();
     await this.refreshState();
+    await this.fetchAuditHistory();
     this.startPolling();
   }
 
@@ -77,6 +87,20 @@ class GridMindDashboard {
         await this.triggerCommanderPlan();
       });
     }
+
+    // Refresh history button
+    if (this.dom.btnRefreshHistory) {
+      this.dom.btnRefreshHistory.addEventListener("click", async () => {
+        await this.fetchAuditHistory();
+      });
+    }
+  }
+
+  getAuthHeaders() {
+    return {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${this.authToken}`,
+    };
   }
 
   startPolling() {
@@ -93,7 +117,7 @@ class GridMindDashboard {
       this.dom.btnAnalyze.disabled = true;
       const res = await fetch("/api/scenario/load", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: this.getAuthHeaders(),
         body: JSON.stringify({ scenario_id: scenarioId }),
       });
       if (!res.ok) {
@@ -101,8 +125,11 @@ class GridMindDashboard {
         throw new Error(err.detail || "Failed to load scenario");
       }
       this.activeScenario = scenarioId;
+      this.mode = "live";
       this.selectedRecordId = null;
+      this.hideHistoryBanner();
       await this.refreshState();
+      await this.fetchAuditHistory();
     } catch (err) {
       console.error("Scenario load error:", err);
       alert("Error loading scenario: " + err.message);
@@ -118,15 +145,21 @@ class GridMindDashboard {
       this.dom.btnAnalyze.disabled = true;
       this.dom.btnAnalyze.innerHTML = '<span class="spinner"></span> Investigating...';
 
-      const res = await fetch("/api/commander/plan", { method: "POST" });
+      const res = await fetch("/api/commander/plan", {
+        method: "POST",
+        headers: this.getAuthHeaders(),
+      });
       if (!res.ok) {
         const err = await res.json();
         throw new Error(err.detail || "Failed to plan incident response");
       }
       const data = await res.json();
       this.activeIncidentId = data.incident_id;
-      this.selectedRecordId = data.incident_id;
+      this.mode = "live";
+      this.selectedRecordId = null;
+      this.hideHistoryBanner();
       await this.refreshState();
+      await this.fetchAuditHistory();
     } catch (err) {
       console.error("Commander plan error:", err);
       alert("Commander Planning Error: " + err.message);
@@ -137,20 +170,19 @@ class GridMindDashboard {
     }
   }
 
-  async submitApproval(approved, approvedBy, reason, incidentId) {
+  async submitApproval(approved, reason, incidentId) {
     if (this.isSubmittingApproval) return;
     try {
       this.isSubmittingApproval = true;
       const endpoint = approved ? "/api/commander/approve" : "/api/commander/reject";
       const payload = {
-        approved_by: approvedBy || "operator_lead",
         reason: reason || (approved ? "Authorized via Control Room UI" : "Rejected by Operator"),
         incident_id: incidentId || this.activeIncidentId,
       };
 
       const res = await fetch(endpoint, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: this.getAuthHeaders(),
         body: JSON.stringify(payload),
       });
 
@@ -160,6 +192,7 @@ class GridMindDashboard {
       }
 
       await this.refreshState();
+      await this.fetchAuditHistory();
     } catch (err) {
       console.error("Approval error:", err);
       alert("Approval Error: " + err.message);
@@ -174,11 +207,18 @@ class GridMindDashboard {
       if (!res.ok) return;
       const data = await res.json();
 
+      // Always update live top telemetry gauges
       this.renderHeader(data);
-      this.renderIncidentState(data);
       this.renderTopology(data);
       this.renderTransformers(data);
 
+      // In history mode, do NOT overwrite historical audit record view
+      if (this.mode === "history" && this.selectedRecordId) {
+        return;
+      }
+
+      // Live mode rendering
+      this.renderIncidentState(data);
       const activeRecord = data.latest_record;
       if (activeRecord) {
         this.activeIncidentId = activeRecord.incident_id;
@@ -192,8 +232,6 @@ class GridMindDashboard {
       } else {
         this.renderIdleState();
       }
-
-      await this.renderAuditHistory(activeRecord ? activeRecord.incident_id : null);
     } catch (err) {
       console.debug("Telemetry polling error:", err);
     }
@@ -259,13 +297,11 @@ class GridMindDashboard {
     const trippedLines = new Set(inc.tripped_lines || []);
     const overheatedXfmrs = new Set(inc.overheated_transformers || []);
 
-    // Update lines in SVG schematic
     const lineL08 = document.getElementById("svg-line-L08");
     if (lineL08) {
       if (trippedLines.has("L08")) {
         lineL08.setAttribute("class", "topo-line tripped");
       } else {
-        // Check if L08 is closed or open
         const l08Obj = (grid.lines || []).find((l) => l.line_id === "L08");
         if (l08Obj && l08Obj.status === "closed") {
           lineL08.setAttribute("class", "topo-line tie-line-closed");
@@ -275,7 +311,6 @@ class GridMindDashboard {
       }
     }
 
-    // Highlight Node N08 & Hospital Node N04
     const nodeN08 = document.getElementById("svg-node-N08");
     if (nodeN08) {
       if (overheatedXfmrs.has("T04")) {
@@ -331,13 +366,13 @@ class GridMindDashboard {
     const stageStatusMap = {
       1: "completed", // Incident Detected
       2: hasOps ? "completed" : "not-reached", // Ops Reasoning
-      3: hasOps && record.specialist_results.operations.candidates.length > 0 ? "completed" : "not-reached", // Candidates
+      3: hasOps && record.specialist_results.operations.candidates && record.specialist_results.operations.candidates.length > 0 ? "completed" : "not-reached",
       4: hasSafety ? "completed" : "not-reached", // Sandbox Eval
       5: hasSafety ? "completed" : "not-reached", // Safety Checks
       6: hasPlanning ? "completed" : "not-reached", // Planning Advice
       7: hasRec ? "completed" : "not-reached", // Recommendation
-      8: status === "PENDING_APPROVAL" ? "paused" : isApproved ? "completed" : isRejected ? "rejected" : "not-reached", // Human Approval
-      9: isVerified ? "completed" : isExecuted ? "active" : "not-reached", // Verification
+      8: status === "PENDING_APPROVAL" ? "paused" : isApproved ? "completed" : isRejected ? "rejected" : "not-reached",
+      9: isVerified ? "completed" : isExecuted ? "active" : "not-reached",
     };
 
     this.dom.stageSteps.forEach((step) => {
@@ -351,7 +386,7 @@ class GridMindDashboard {
     if (!this.dom.approvalContainer) return;
     const status = record.status;
 
-    if (status !== "PENDING_APPROVAL") {
+    if (status !== "PENDING_APPROVAL" || this.mode === "history") {
       this.dom.approvalContainer.innerHTML = "";
       this.dom.approvalContainer.style.display = "none";
       return;
@@ -374,7 +409,6 @@ class GridMindDashboard {
           <div class="params-text">Parameters: <code>${this.escapeHtml(paramsJson)}</code></div>
         </div>
         <div class="approval-actions-row">
-          <input type="text" id="operator-name-input" placeholder="Operator Name" value="operator_lead" style="background: rgba(0,0,0,0.4); border: 1px solid var(--border-subtle); color: #fff; padding: 6px 10px; border-radius: 4px; font-size: 11px; font-family: var(--font-mono); width: 140px;">
           <input type="text" id="operator-reason-input" placeholder="Approval Reason / Authorization Note" value="Standard incident protocol verified" style="background: rgba(0,0,0,0.4); border: 1px solid var(--border-subtle); color: #fff; padding: 6px 10px; border-radius: 4px; font-size: 11px; flex: 1;">
           <button id="btn-reject-action" class="btn-action btn-reject">✖ Reject Action</button>
           <button id="btn-approve-action" class="btn-action btn-approve">✔ Authorize & Execute</button>
@@ -383,15 +417,13 @@ class GridMindDashboard {
     `;
 
     document.getElementById("btn-approve-action").addEventListener("click", () => {
-      const opName = document.getElementById("operator-name-input").value;
       const opReason = document.getElementById("operator-reason-input").value;
-      this.submitApproval(true, opName, opReason, record.incident_id);
+      this.submitApproval(true, opReason, record.incident_id);
     });
 
     document.getElementById("btn-reject-action").addEventListener("click", () => {
-      const opName = document.getElementById("operator-name-input").value;
       const opReason = document.getElementById("operator-reason-input").value;
-      this.submitApproval(false, opName, opReason, record.incident_id);
+      this.submitApproval(false, opReason, record.incident_id);
     });
   }
 
@@ -539,7 +571,7 @@ class GridMindDashboard {
       const events = data.events || [];
 
       if (events.length === 0) {
-        this.dom.activityFeed.innerHTML = '<div style="color: var(--text-muted); padding: 12px;">No events recorded.</div>';
+        this.dom.activityFeed.innerHTML = '<div style="color: var(--text-muted); padding: 12px;">No events recorded for this incident.</div>';
         return;
       }
 
@@ -600,10 +632,10 @@ class GridMindDashboard {
     }
   }
 
-  async renderAuditHistory(activeId) {
+  async fetchAuditHistory() {
     if (!this.dom.auditHistoryList) return;
     try {
-      const res = await fetch("/api/audit/records");
+      const res = await fetch(`/api/audit/records?limit=${this.auditPageSize}&offset=${this.auditOffset}`);
       if (!res.ok) return;
       const data = await res.json();
       const records = data.records || [];
@@ -615,7 +647,7 @@ class GridMindDashboard {
 
       this.dom.auditHistoryList.innerHTML = records
         .map((r) => {
-          const isSelected = r.incident_id === (this.selectedRecordId || activeId);
+          const isSelected = r.incident_id === (this.selectedRecordId || this.activeIncidentId);
           let statusBadgeClass = "badge-rec";
           if (r.status === "VERIFIED") statusBadgeClass = "badge-accept";
           else if (r.status === "REJECTED_BY_HUMAN" || r.status === "NO_SAFE_ACTION") statusBadgeClass = "badge-reject";
@@ -635,29 +667,79 @@ class GridMindDashboard {
         })
         .join("");
 
-      // Bind click on items to view that specific record
+      // Bind click on historical records to enter history mode
       this.dom.auditHistoryList.querySelectorAll(".audit-history-item").forEach((item) => {
-        item.addEventListener("click", async (e) => {
+        item.addEventListener("click", async () => {
           const targetId = item.getAttribute("data-id");
           if (targetId) {
-            this.selectedRecordId = targetId;
-            const recRes = await fetch(`/api/audit/records/${encodeURIComponent(targetId)}`);
-            if (recRes.ok) {
-              const rec = await recRes.json();
-              this.renderLifecycleStages(rec);
-              this.renderApprovalGate(rec);
-              this.renderSandboxMatrix(rec);
-              this.renderSpecialists(rec);
-              this.renderRecommendation(rec);
-              this.renderPostVerification(rec);
-              await this.renderActivityEvents(rec.incident_id);
-            }
+            await this.selectHistoricalRecord(targetId);
           }
         });
       });
     } catch (err) {
       console.debug("Audit history fetch error:", err);
     }
+  }
+
+  async selectHistoricalRecord(incidentId) {
+    try {
+      const res = await fetch(`/api/audit/records/${encodeURIComponent(incidentId)}`);
+      if (!res.ok) return;
+      const rec = await res.json();
+
+      this.mode = "history";
+      this.selectedRecordId = incidentId;
+      this.showHistoryBanner(rec);
+
+      // Highlight in history drawer
+      this.dom.auditHistoryList.querySelectorAll(".audit-history-item").forEach((item) => {
+        item.classList.toggle("active-item", item.getAttribute("data-id") === incidentId);
+      });
+
+      // Render historical record details
+      if (this.dom.incidentScenario) this.dom.incidentScenario.textContent = rec.scenario_id;
+      if (this.dom.incidentTitle) this.dom.incidentTitle.textContent = rec.incident_id;
+      if (this.dom.incidentStatus) this.dom.incidentStatus.textContent = rec.status;
+
+      this.renderLifecycleStages(rec);
+      this.renderApprovalGate(rec);
+      this.renderSandboxMatrix(rec);
+      this.renderSpecialists(rec);
+      this.renderRecommendation(rec);
+      this.renderPostVerification(rec);
+      await this.renderActivityEvents(rec.incident_id);
+    } catch (err) {
+      console.error("Failed to load historical record:", err);
+    }
+  }
+
+  showHistoryBanner(record) {
+    if (!this.dom.historyBanner) return;
+    this.dom.historyBanner.style.display = "flex";
+    this.dom.historyBanner.innerHTML = `
+      <div style="display: flex; align-items: center; gap: 10px;">
+        <span class="badge-tag badge-rec" style="background: rgba(56, 189, 248, 0.25);">HISTORICAL INSPECTION MODE</span>
+        <span style="font-size: 11px; color: #f8fafc;">
+          Viewing persistent record <strong>${this.escapeHtml(record.incident_id)}</strong> (Scenario: <strong>${record.scenario_id}</strong> | Status: <strong>${record.status}</strong>). Live polling will not overwrite this view.
+        </span>
+      </div>
+      <button id="btn-return-live" class="btn-action" style="padding: 4px 12px; font-size: 10px; background: #0284c7;">
+        ↩ Return to Live Control
+      </button>
+    `;
+
+    document.getElementById("btn-return-live").addEventListener("click", async () => {
+      this.mode = "live";
+      this.selectedRecordId = null;
+      this.hideHistoryBanner();
+      await this.refreshState();
+    });
+  }
+
+  hideHistoryBanner() {
+    if (!this.dom.historyBanner) return;
+    this.dom.historyBanner.style.display = "none";
+    this.dom.historyBanner.innerHTML = "";
   }
 
   renderIdleState() {

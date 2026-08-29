@@ -243,6 +243,18 @@ header.app-header {
   overflow-x: auto;
 }
 
+.history-banner {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin: 12px 24px 0 24px;
+  padding: 10px 16px;
+  background: linear-gradient(135deg, rgba(2, 132, 199, 0.15), rgba(15, 23, 42, 0.9));
+  border: 1px solid rgba(56, 189, 248, 0.4);
+  border-radius: var(--radius-md);
+  box-shadow: 0 0 16px rgba(56, 189, 248, 0.15);
+}
+
 .stage-pipeline {
   display: flex;
   align-items: center;

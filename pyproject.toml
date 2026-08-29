@@ -29,7 +29,8 @@ where = ["."]
 include = ["agent*", "core*", "dashboard*", "gridmind*"]
 
 [tool.setuptools.package-data]
-"*" = ["*.csv", "*.json"]
+"*" = ["*.csv", "*.json", "*.html", "*.css", "*.js", "*.svg", "*.png", "*.ico"]
+"dashboard" = ["templates/*.html", "static/css/*.css", "static/js/*.js"]
 
 [tool.ruff]
 line-length = 88
