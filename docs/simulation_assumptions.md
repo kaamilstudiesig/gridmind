@@ -85,9 +85,11 @@ A grid state is declared **Stable** (`is_stable = True`) if and only if **zero**
 ## 6. Action Taxonomy & Guardrails
 
 - **Immediate Operational Control Actions**:
-  - `load_restriction`: Curtails demand by `reduction_pct` at a specified load zone.
-  - `load_transfer` / `close_tie_line`: Closes emergency tie-line `L08` to transfer up to $100\text{ kW}$ from Feeder-B to Feeder-A. **Rejected with violation** if `L08` is `TRIPPED` / `UNAVAILABLE`.
-  - `isolate_transformer`: Opens transformer breaker, shifting downstream load to surviving bank units.
+  - `load_restriction`: Curtails demand by `reduction_pct` at a specified load zone (parameters: `target`, `reduction_pct` as a numeric percentage in range 0–100, e.g. `15.0` means $15\%$ reduction, NOT $0.15\%$. String values like `"15"` or `"0.15"` are rejected).
+  - `close_tie_line`: Closes an available tie line (`line_id`, e.g. `L08`). In the current GridMind model, closing `L08` results in the simulator's modeled default $0.10\text{ MW}$ ($100\text{ kW}$) power transfer. This is a non-parameterized switching action. **Rejected** if `L08` is `TRIPPED` / `ISOLATED` or already `CLOSED`.
+  - `load_transfer`: Explicitly requested parameterized power transfer (parameters: `line_id`, `source`, `destination`, `transfer_mw`). Currently supported route is `L08` between `N08` (Feeder-B) and `N04` (Feeder-A). **Rejected** if `transfer_mw` exceeds line capacity ($1.0\text{ MW}$), if `L08` is `TRIPPED` / `ISOLATED`, or if unsupported endpoints are targeted.
+  - `isolate_transformer`: Opens transformer breaker, shifting downstream load to surviving bank units (parameters: `transformer_id`).
 - **Longer-Term Planning Actions**:
-  - `transformer_replacement`: Replaces/uprates an asset (e.g. $T04 \to 500\text{ kVA}$). Modeled as a planning-state operation.
-- **Sandbox Isolation Invariant**: `evaluate_sandbox(state, action)` deep-clones the grid state and evaluates the candidate action without mutating the original state.
+  - `transformer_replacement`: Replaces/uprates an asset (parameters: `transformer_id`, `additional_kva`). Modeled as a planning work order; sandbox evaluates the future uprated capacity without modifying live physical hardware.
+- **Sandbox Isolation Invariant**: `evaluate_sandbox(state, action)` deep-clones the grid state and evaluates the candidate action without mutating the original live state.
+

@@ -211,6 +211,105 @@ class TestServiceContract(unittest.TestCase):
         t04_after = next(t.temperature_c for t in live_after.transformers if t.transformer_id == "T04")
         self.assertEqual(t04_before, t04_after)
 
+    def test_close_tie_line_vs_load_transfer_semantics(self) -> None:
+        """Explicitly tests the distinction between non-parameterized close_tie_line and parameterized load_transfer."""
+        self.service.load_scenario("SC01-B")
+
+        # 1. Non-parameterized close_tie_line: takes only line_id, yields default 0.100 MW flow
+        eval_close = self.service.evaluate_action(
+            ActionRequest(
+                action_type="close_tie_line",
+                parameters={"line_id": "L08"},
+            )
+        )
+        self.assertTrue(eval_close.action_valid)
+        self.assertTrue(eval_close.is_stable)
+        self.assertAlmostEqual(eval_close.predicted_line_loadings_pct["L08"], 10.0, delta=0.1)
+
+        # 2. Parameterized load_transfer: takes line_id, source, destination, transfer_mw
+        eval_transfer_50kw = self.service.evaluate_action(
+            ActionRequest(
+                action_type="load_transfer",
+                parameters={
+                    "line_id": "L08",
+                    "source": "N08",
+                    "destination": "N04",
+                    "transfer_mw": 0.050,
+                },
+            )
+        )
+        self.assertTrue(eval_transfer_50kw.action_valid)
+        self.assertAlmostEqual(eval_transfer_50kw.predicted_line_loadings_pct["L08"], 5.0, delta=0.1)
+
+        eval_transfer_100kw = self.service.evaluate_action(
+            ActionRequest(
+                action_type="load_transfer",
+                parameters={
+                    "line_id": "L08",
+                    "source": "N08",
+                    "destination": "N04",
+                    "transfer_mw": 0.100,
+                },
+            )
+        )
+        self.assertTrue(eval_transfer_100kw.action_valid)
+        self.assertAlmostEqual(eval_transfer_100kw.predicted_line_loadings_pct["L08"], 10.0, delta=0.1)
+
+    def test_reduction_pct_numeric_percentage_semantics(self) -> None:
+        """Tests that load_restriction interprets reduction_pct as numeric percentage and rejects strings/booleans."""
+        self.service.load_scenario("SC01")
+
+        # 1. 15 -> 15% reduction
+        eval_15 = self.service.evaluate_action(
+            ActionRequest(
+                action_type="load_restriction",
+                parameters={"target": "N08", "reduction_pct": 15},
+            )
+        )
+        self.assertTrue(eval_15.action_valid)
+        self.assertTrue(eval_15.is_stable)
+        self.assertAlmostEqual(eval_15.predicted_transformer_temperatures_c["T04"], 97.55, delta=0.2)
+
+        # 2. 5 -> 5% reduction
+        eval_5 = self.service.evaluate_action(
+            ActionRequest(
+                action_type="load_restriction",
+                parameters={"target": "N08", "reduction_pct": 5},
+            )
+        )
+        self.assertTrue(eval_5.action_valid)
+        self.assertTrue(eval_5.is_stable)
+        self.assertAlmostEqual(eval_5.predicted_transformer_temperatures_c["T04"], 107.45, delta=0.2)
+
+        # 3. 0.15 -> 0.15% reduction (NOT 15%, so T04 remains overheated at 112.49°C)
+        eval_015 = self.service.evaluate_action(
+            ActionRequest(
+                action_type="load_restriction",
+                parameters={"target": "N08", "reduction_pct": 0.15},
+            )
+        )
+        self.assertTrue(eval_015.action_valid)
+        self.assertFalse(eval_015.is_stable)
+        self.assertAlmostEqual(eval_015.predicted_transformer_temperatures_c["T04"], 112.49, delta=0.2)
+
+        # 4. "15" string -> rejected
+        eval_15_str = self.service.evaluate_action(
+            ActionRequest(
+                action_type="load_restriction",
+                parameters={"target": "N08", "reduction_pct": "15"},
+            )
+        )
+        self.assertFalse(eval_15_str.action_valid)
+
+        # 5. "0.15" string -> rejected
+        eval_015_str = self.service.evaluate_action(
+            ActionRequest(
+                action_type="load_restriction",
+                parameters={"target": "N08", "reduction_pct": "0.15"},
+            )
+        )
+        self.assertFalse(eval_015_str.action_valid)
+
 
 if __name__ == "__main__":
     unittest.main()

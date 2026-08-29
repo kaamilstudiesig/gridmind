@@ -1,0 +1,63 @@
+{
+  "scenario_id": "SC01-B",
+  "data_class": "synthetic",
+  "public_calibration_notes": [
+    "SC01-B variant: Reuses the SC01 heatwave conditions and N08 commercial demand spike, but emergency tie-line L08 is healthy and operational (status OPEN)."
+  ],
+  "environment": {
+    "ambient_temp_c": 34,
+    "demand_multiplier": 1.15,
+    "storm": false
+  },
+  "events": [
+    {
+      "type": "demand_spike",
+      "target": "N08",
+      "increase_pct": 12
+    }
+  ],
+  "hard_constraints": {
+    "frequency_hz_min": 49.5,
+    "frequency_hz_max": 50.5,
+    "line_loading_pct_max": 100,
+    "transformer_temperature_c_max": 110,
+    "critical_load_min_service_pct": 100
+  },
+  "action_space": [
+    {
+      "action": "load_transfer",
+      "parameters": {
+        "from": "N08",
+        "to": "N04",
+        "line_id": "L08",
+        "mw": 0.1
+      }
+    },
+    {
+      "action": "load_restriction",
+      "parameters": {
+        "target": "N08",
+        "reduction_pct": 15
+      }
+    },
+    {
+      "action": "close_tie_line",
+      "parameters": {
+        "line_id": "L08"
+      }
+    },
+    {
+      "action": "isolate_transformer",
+      "parameters": {
+        "transformer_id": "T04"
+      }
+    },
+    {
+      "action": "transformer_replacement",
+      "parameters": {
+        "transformer_id": "T04",
+        "additional_kva": 250
+      }
+    }
+  ]
+}

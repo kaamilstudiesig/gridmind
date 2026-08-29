@@ -518,11 +518,11 @@ class TestEngine(unittest.TestCase):
 
     def test_close_tie_line_validation_and_execution(self) -> None:
         """Tests close_tie_line rules: healthy L08 succeeds, non-tie lines rejected, tripped L08 rejected."""
-        # 1. Close healthy open L08
+        # 1. Close healthy open L08 (non-parameterized, yields default modeled 0.10 MW transfer)
         self.state.edges["E08"].status = LineStatus.OPEN
         act_healthy = Action(
             action_type="close_tie_line",
-            parameters={"line_id": "L08", "transfer_mw": 0.100},
+            parameters={"line_id": "L08"},
         )
         is_val, reason = self.engine.validate_action(self.state, act_healthy)
         self.assertTrue(is_val)

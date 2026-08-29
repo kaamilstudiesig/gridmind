@@ -584,10 +584,9 @@ class GridMindEngine:
             raw_reduction = action.parameters.get(
                 "reduction_pct", action.parameters.get("reduction")
             )
-            try:
-                reduction_pct = float(raw_reduction)
-            except (ValueError, TypeError):
-                return False, f"Invalid reduction_pct value '{raw_reduction}'"
+            if isinstance(raw_reduction, bool) or not isinstance(raw_reduction, (int, float)):
+                return False, f"Invalid reduction_pct value '{raw_reduction}': must be numeric in range 0-100"
+            reduction_pct = float(raw_reduction)
 
             if reduction_pct < 0.0:
                 return (

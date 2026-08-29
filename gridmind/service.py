@@ -4,6 +4,8 @@ Service implementation of the GridMind simulator contract.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Optional
 
 from gridmind.contract import (
@@ -33,7 +35,7 @@ from gridmind.models import (
 )
 
 
-SUPPORTED_SCENARIOS = frozenset({"SC01", "BASE"})
+SUPPORTED_SCENARIOS = frozenset({"SC01", "SC01-B", "SC01_B", "BASE"})
 
 
 class GridMindService:
@@ -59,17 +61,22 @@ class GridMindService:
         """
         Initializes or resets the simulator to a specific scenario state.
         For SC01: applies heatwave environment, trips L08, and spikes N08.
+        For SC01-B: applies heatwave environment and spikes N08 with L08 operational.
         Rejects unsupported scenario IDs before mutating live state.
         """
-        if scenario_id not in SUPPORTED_SCENARIOS:
+        clean_id = scenario_id.strip()
+        norm_id = clean_id.upper().replace("_", "-")
+        if norm_id not in ("SC01", "SC01-B", "BASE") and clean_id not in SUPPORTED_SCENARIOS:
             raise ValueError(
                 f"Unsupported scenario ID '{scenario_id}'. Supported scenarios: {sorted(SUPPORTED_SCENARIOS)}"
             )
 
-        self.state = load_curated_grid(self.data_dir)
-        self.active_scenario_id = scenario_id
+        canonical_id = {"SC01": "SC01", "SC01-B": "SC01-B", "BASE": "BASE"}.get(norm_id, clean_id)
 
-        if scenario_id == "SC01":
+        self.state = load_curated_grid(self.data_dir)
+        self.active_scenario_id = canonical_id
+
+        if canonical_id in ("SC01", "SC01-B"):
             # 1. Heatwave environment
             self.engine.apply_event(
                 self.state,
@@ -78,14 +85,15 @@ class GridMindService:
                     parameters={"ambient_temp_c": 34.0, "demand_multiplier": 1.15, "storm": False},
                 ),
             )
-            # 2. Lockout on L08
-            self.engine.apply_event(
-                self.state,
-                IncidentEvent(
-                    event_type="line_failure",
-                    parameters={"line_id": "L08"},
-                ),
-            )
+            # 2. Lockout on L08 (SC01 only; SC01-B keeps L08 operational/open)
+            if canonical_id == "SC01":
+                self.engine.apply_event(
+                    self.state,
+                    IncidentEvent(
+                        event_type="line_failure",
+                        parameters={"line_id": "L08"},
+                    ),
+                )
             # 3. Demand spike on N08 (+12%)
             self.engine.apply_event(
                 self.state,
@@ -385,3 +393,24 @@ class GridMindService:
             critical_load_service_pct=res.critical_load_service_pct,
             summary=res.summary,
         )
+
+    def get_state_revision(self) -> str:
+        """
+        Returns a deterministic hash of the current grid/scenario state.
+        Used for state-revision revalidation between planning and execution.
+        """
+        res = self.state.latest_result or self.engine.solve(self.state)
+        state_snapshot = {
+            "scenario_id": self.active_scenario_id,
+            "frequency_hz": round(res.frequency_hz, 6),
+            "is_stable": res.is_stable,
+            "transformer_temperatures": {
+                k: round(v, 4) for k, v in sorted(res.transformer_temperatures_c.items())
+            },
+            "line_loadings": {
+                k: round(v, 4) for k, v in sorted(res.line_loadings_pct.items())
+            },
+            "violations": sorted([v.description for v in res.violations]),
+        }
+        snapshot_bytes = json.dumps(state_snapshot, sort_keys=True, ensure_ascii=True).encode()
+        return hashlib.sha256(snapshot_bytes).hexdigest()[:16]
