@@ -14,6 +14,7 @@ import uuid
 
 from gridmind.audit_store import AuditStore
 from gridmind.contract import ActionRequest, EvaluationResponse, GridStateResponse, IncidentStateResponse
+from gridmind.llm import LLMClient
 from gridmind.service import GridMindService
 from gridmind.specialists import (
     OperationsSpecialist,
@@ -160,12 +161,14 @@ class GridMindCommander:
         operations_specialist: Optional[OperationsSpecialist] = None,
         safety_specialist: Optional[SafetySpecialist] = None,
         planning_specialist: Optional[PlanningSpecialist] = None,
+        llm_client: Optional[LLMClient] = None,
     ) -> None:
         self.service = service or GridMindService()
         self.audit_store = audit_store or AuditStore()
-        self.operations = operations_specialist or OperationsSpecialist()
-        self.safety = safety_specialist or SafetySpecialist()
-        self.planning = planning_specialist or PlanningSpecialist()
+        self.llm_client = llm_client or LLMClient()
+        self.operations = operations_specialist or OperationsSpecialist(llm_client=self.llm_client)
+        self.safety = safety_specialist or SafetySpecialist(llm_client=self.llm_client)
+        self.planning = planning_specialist or PlanningSpecialist(llm_client=self.llm_client)
 
     def plan_incident_response(
         self,

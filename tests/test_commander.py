@@ -8,6 +8,7 @@ import os
 import tempfile
 import unittest
 from typing import Any, Optional
+from unittest.mock import MagicMock
 
 from gridmind.audit_store import AuditStore
 from gridmind.commander import (
@@ -18,6 +19,7 @@ from gridmind.commander import (
     rank_safe_candidates,
 )
 from gridmind.contract import ActionRequest, EvaluationResponse, ViolationDTO
+from gridmind.llm import LLMClient
 from gridmind.models import LineStatus
 from gridmind.service import GridMindService
 from gridmind.specialists import (
@@ -409,6 +411,70 @@ class TestGridMindCommander(unittest.TestCase):
         l08 = next(line for line in post_grid_b.lines if line.line_id == "L08")
         self.assertEqual(l08.status, LineStatus.CLOSED.value)
         self.assertAlmostEqual(l08.flow_kw, 100.0, delta=0.1)
+
+    def test_14_llm_client_mock_invocation(self) -> None:
+        """Tests that LLMClient is invoked during plan_incident_response for all specialists."""
+        self.service.load_scenario("SC01")
+        mock_llm = MagicMock(spec=LLMClient)
+        mock_llm.generate_narrative.side_effect = [
+            ("LLM Operations Finding: High feeder stress.", "LLM Operations Rec: Evaluate switching."),
+            ("LLM Safety Finding: 1 safe action verified.", "LLM Safety Rec: Authorize load restriction."),
+            ("LLM Planning Finding: Uprate T04 long term.", "LLM Planning Rec: Issue capital work order."),
+        ]
+
+        commander = GridMindCommander(
+            service=self.service,
+            audit_store=self.audit_store,
+            llm_client=mock_llm,
+        )
+
+        plan = commander.plan_incident_response(incident_id="INC-LLM-01")
+        self.assertEqual(plan.status, AuditRecordStatus.PENDING_APPROVAL.value)
+        self.assertEqual(mock_llm.generate_narrative.call_count, 3)
+
+        # Check that specialist results received the LLM synthesized text
+        op_res = plan.specialist_results["operations"]
+        self.assertEqual(op_res.finding, "LLM Operations Finding: High feeder stress.")
+        self.assertEqual(op_res.recommendation, "LLM Operations Rec: Evaluate switching.")
+
+        safety_res = plan.specialist_results["safety"]
+        self.assertEqual(safety_res.finding, "LLM Safety Finding: 1 safe action verified.")
+        self.assertEqual(safety_res.recommendation, "LLM Safety Rec: Authorize load restriction.")
+
+        planning_res = plan.specialist_results["planning"]
+        self.assertEqual(planning_res.finding, "LLM Planning Finding: Uprate T04 long term.")
+        self.assertEqual(planning_res.recommendation, "LLM Planning Rec: Issue capital work order.")
+
+    def test_15_llm_degraded_mode_fallback_on_api_error(self) -> None:
+        """Tests that API network failures trigger [DEGRADED_MODE] and fall back to template text."""
+        self.service.load_scenario("SC01")
+
+        # Create LLMClient with a key pointing to an unreachable endpoint
+        failing_llm = LLMClient(
+            api_key="sk-test-key-12345",
+            base_url="http://127.0.0.1:59999/v1",
+            timeout=0.2,
+            max_retries=1,
+        )
+
+        commander = GridMindCommander(
+            service=self.service,
+            audit_store=self.audit_store,
+            llm_client=failing_llm,
+        )
+
+        with self.assertLogs("gridmind.llm", level="WARNING") as log_cm:
+            plan = commander.plan_incident_response(incident_id="INC-DEGRADED-01")
+
+        # Confirm [DEGRADED_MODE] was logged
+        self.assertTrue(any("[DEGRADED_MODE]" in record.getMessage() for record in log_cm.records))
+
+        # Confirm graceful template fallback and valid well-formed plan
+        self.assertEqual(plan.status, AuditRecordStatus.PENDING_APPROVAL.value)
+        self.assertIsNotNone(plan.recommended_action)
+        self.assertIn("operational candidates", plan.specialist_results["operations"].finding)
+        self.assertIn("T04", plan.specialist_results["planning"].finding)
+        self.assertIn("AuditRecord", str(plan.audit_record))
 
 
 if __name__ == "__main__":

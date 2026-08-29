@@ -46,6 +46,7 @@ from gridmind.commander import (
     rank_safe_candidates,
 )
 from gridmind.http_server import create_http_app, run_http_server
+from gridmind.llm import LLMClient
 from gridmind.mcp_server import GridMindMCPServer, create_mcp_server
 from gridmind.service import GridMindService
 from gridmind.specialists import (
@@ -62,6 +63,7 @@ __all__ = [
     "GridMindService",
     "GridMindCommander",
     "GridMindMCPServer",
+    "LLMClient",
     "AuditStore",
     "AuditRecord",
     "AuditRecordStatus",

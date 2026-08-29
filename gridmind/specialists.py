@@ -10,6 +10,7 @@ from enum import Enum
 from typing import Any, Optional
 
 from gridmind.contract import EvaluationResponse, GridStateResponse, IncidentStateResponse
+from gridmind.llm import LLMClient
 
 
 class SpecialistRole(str, Enum):
@@ -48,10 +49,14 @@ class OperationsSpecialist:
     Operations Specialist:
     - Inspects active incident state and live grid telemetry.
     - Proposes at most 3 plausible candidate actions mapping directly to MCP actions.
+    - Synthesizes findings and recommendations via LLMClient.
     - Does NOT execute actions.
     - Enforces MAX_CANDIDATES = 3.
     """
     MAX_CANDIDATES: int = 3
+
+    def __init__(self, llm_client: Optional[LLMClient] = None) -> None:
+        self.llm_client = llm_client or LLMClient()
 
     def analyze(
         self,
@@ -70,14 +75,25 @@ class OperationsSpecialist:
         })
 
         if incident_state.is_stable and not incident_state.active_violations:
+            default_finding = "Grid operating in nominal stable state. Zero violations detected."
+            default_rec = "Continue normal baseline monitoring."
+            finding, rec = self.llm_client.generate_narrative(
+                agent_role=SpecialistRole.OPERATIONS.value,
+                status=SpecialistStatus.ACCEPT.value,
+                candidates=[],
+                evidence=evidence,
+                risks=[],
+                default_finding=default_finding,
+                default_recommendation=default_rec,
+            )
             return SpecialistResult(
                 agent=SpecialistRole.OPERATIONS.value,
                 status=SpecialistStatus.ACCEPT.value,
                 candidates=[],
-                finding="Grid operating in nominal stable state. Zero violations detected.",
+                finding=finding,
                 evidence=evidence,
                 risks=[],
-                recommendation="Continue normal baseline monitoring.",
+                recommendation=rec,
             )
 
         candidates: list[dict[str, Any]] = []
@@ -120,16 +136,28 @@ class OperationsSpecialist:
                 f"Operations proposed {len(candidates)} candidates, exceeding MAX_CANDIDATES={self.MAX_CANDIDATES}"
             )
 
+        chosen_candidates = candidates[: self.MAX_CANDIDATES]
+        default_finding = f"Identified {len(chosen_candidates)} operational candidates to relieve transformer overheating."
+        default_rec = "Evaluate operational candidate actions through MCP sandbox isolation before human approval."
+
+        finding, rec = self.llm_client.generate_narrative(
+            agent_role=SpecialistRole.OPERATIONS.value,
+            status=SpecialistStatus.ACCEPT.value,
+            candidates=chosen_candidates,
+            evidence=evidence,
+            risks=risks,
+            default_finding=default_finding,
+            default_recommendation=default_rec,
+        )
+
         return SpecialistResult(
             agent=SpecialistRole.OPERATIONS.value,
             status=SpecialistStatus.ACCEPT.value,
-            candidates=candidates[: self.MAX_CANDIDATES],
-            finding=f"Identified {len(candidates)} operational candidates to relieve transformer overheating.",
+            candidates=chosen_candidates,
+            finding=finding,
             evidence=evidence,
             risks=risks,
-            recommendation=(
-                "Evaluate operational candidate actions through MCP sandbox isolation before human approval."
-            ),
+            recommendation=rec,
         )
 
 
@@ -139,8 +167,12 @@ class SafetySpecialist:
     - Evaluates sandbox simulation results for candidate actions.
     - Classifies candidates as ACCEPT, REJECT, or ESCALATE.
     - Enforces hard constraints: critical-load preservation (100%), line loading <= 100%, T <= 110.0°C.
+    - Synthesizes findings and recommendations via LLMClient.
     - Does NOT execute actions.
     """
+
+    def __init__(self, llm_client: Optional[LLMClient] = None) -> None:
+        self.llm_client = llm_client or LLMClient()
 
     def evaluate_candidates(
         self,
@@ -193,12 +225,22 @@ class SafetySpecialist:
 
         if not safe_candidates:
             status = SpecialistStatus.REJECT.value
-            finding = "All candidate actions were rejected by safety constraints."
-            recommendation = "No safe immediate action available. Escalating to planning for long-term remediation."
+            default_finding = "All candidate actions were rejected by safety constraints."
+            default_rec = "No safe immediate action available. Escalating to planning for long-term remediation."
         else:
             status = SpecialistStatus.ACCEPT.value
-            finding = f"Verified {len(safe_candidates)} candidate action(s) satisfy all hard safety constraints."
-            recommendation = f"Approve one verified safe candidate: {[c['action_type'] for c in safe_candidates]}."
+            default_finding = f"Verified {len(safe_candidates)} candidate action(s) satisfy all hard safety constraints."
+            default_rec = f"Approve one verified safe candidate: {[c['action_type'] for c in safe_candidates]}."
+
+        finding, rec = self.llm_client.generate_narrative(
+            agent_role=SpecialistRole.SAFETY.value,
+            status=status,
+            candidates=safe_candidates,
+            evidence=evidence,
+            risks=risks,
+            default_finding=default_finding,
+            default_recommendation=default_rec,
+        )
 
         res = SpecialistResult(
             agent=SpecialistRole.SAFETY.value,
@@ -207,7 +249,7 @@ class SafetySpecialist:
             finding=finding,
             evidence=evidence,
             risks=risks,
-            recommendation=recommendation,
+            recommendation=rec,
         )
         return res, safe_candidates
 
@@ -216,8 +258,12 @@ class PlanningSpecialist:
     """
     Planning Specialist:
     - Identifies longer-term asset remediation and reinforcement work orders.
+    - Synthesizes findings and recommendations via LLMClient.
     - Does NOT override immediate safety and does NOT execute actions.
     """
+
+    def __init__(self, llm_client: Optional[LLMClient] = None) -> None:
+        self.llm_client = llm_client or LLMClient()
 
     def analyze_long_term(
         self,
@@ -237,14 +283,24 @@ class PlanningSpecialist:
                 "parameters": {"transformer_id": "T04", "additional_kva": 250.0},
             })
 
-        finding = (
+        default_finding = (
             "Recommended long-term planning work order: uprate/replace T04 (+250 kVA) to provide 500 kVA capacity."
         )
         risks = [
             "Planning work orders require capital equipment procurement and crew scheduling; they do not clear real-time thermal overloads immediately."
         ]
-        recommendation = (
+        default_rec = (
             "Queue planning work order for T04 uprate after resolving immediate operational constraints."
+        )
+
+        finding, rec = self.llm_client.generate_narrative(
+            agent_role=SpecialistRole.PLANNING.value,
+            status=SpecialistStatus.ACCEPT.value,
+            candidates=planning_candidates,
+            evidence=evidence,
+            risks=risks,
+            default_finding=default_finding,
+            default_recommendation=default_rec,
         )
 
         return SpecialistResult(
@@ -254,5 +310,5 @@ class PlanningSpecialist:
             finding=finding,
             evidence=evidence,
             risks=risks,
-            recommendation=recommendation,
+            recommendation=rec,
         )
