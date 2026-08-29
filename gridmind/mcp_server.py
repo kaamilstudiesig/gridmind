@@ -37,27 +37,32 @@ class LoadRestrictionParams(BaseModel):
         ...,
         ge=0.0,
         le=100.0,
-        description="Percentage reduction to apply (0.0 to 100.0)",
+        description="Percentage reduction to apply to zone demand (0.0 to 100.0)",
     )
 
 
 class LoadTransferParams(BaseModel):
+    """
+    Schema for parameterized load transfer action.
+    Explicitly requests a parameterized power transfer amount ('transfer_mw') across a tie line ('line_id')
+    between supported source and destination endpoints (current supported route: L08 between N08 and N04).
+    """
     line_id: str = Field(
         ...,
-        description="Tie-line identifier (e.g. 'L08')",
+        description="Tie-line identifier for the transfer route (e.g. 'L08')",
     )
     source: str = Field(
         ...,
-        description="Source node ID from which load is transferred (e.g. 'N08')",
+        description="Source node ID from which load is transferred (e.g. 'N08' on Feeder-B)",
     )
     destination: str = Field(
         ...,
-        description="Destination node ID receiving the transferred load (e.g. 'N04')",
+        description="Destination node ID receiving the transferred load (e.g. 'N04' on Feeder-A)",
     )
     transfer_mw: float = Field(
         ...,
         gt=0.0,
-        description="Power transfer amount in MW (e.g. 0.100)",
+        description="Explicitly requested power transfer amount in MW (e.g. 0.100 for 100 kW)",
     )
 
 
@@ -81,9 +86,15 @@ class TransformerReplacementParams(BaseModel):
 
 
 class CloseTieLineParams(BaseModel):
+    """
+    Schema for non-parameterized tie-line closing action.
+    Closes an available tie line (e.g. 'L08'). In the current GridMind model, closing L08
+    results in the simulator's modeled default 0.10 MW (100 kW) transfer.
+    It is not a parameterized transfer action.
+    """
     line_id: str = Field(
         default="L08",
-        description="Emergency tie-line identifier to close (e.g. 'L08')",
+        description="Tie-line identifier to close (e.g. 'L08'). Results in default modeled 0.10 MW transfer.",
     )
 
 
@@ -231,7 +242,13 @@ class GridMindMCPServer:
         async def evaluate_action(
             action_type: str = Field(
                 ...,
-                description="Type of action to evaluate: load_restriction, load_transfer, close_tie_line, isolate_transformer, transformer_replacement",
+                description=(
+                    "Type of action: 'load_restriction' (curtail zone demand), "
+                    "'load_transfer' (parameterized transfer with line_id, source, destination, transfer_mw), "
+                    "'close_tie_line' (non-parameterized tie line close with line_id and default 0.10 MW transfer), "
+                    "'isolate_transformer' (isolate transformer), "
+                    "'transformer_replacement' (uprate/replace transformer planning work order)"
+                ),
             ),
             parameters: dict[str, Any] = Field(
                 ...,
@@ -296,7 +313,13 @@ class GridMindMCPServer:
         async def execute_action(
             action_type: str = Field(
                 ...,
-                description="Type of action to execute: load_restriction, load_transfer, close_tie_line, isolate_transformer, transformer_replacement",
+                description=(
+                    "Type of action: 'load_restriction' (curtail zone demand), "
+                    "'load_transfer' (parameterized transfer with line_id, source, destination, transfer_mw), "
+                    "'close_tie_line' (non-parameterized tie line close with line_id and default 0.10 MW transfer), "
+                    "'isolate_transformer' (isolate transformer), "
+                    "'transformer_replacement' (uprate/replace transformer planning work order)"
+                ),
             ),
             parameters: dict[str, Any] = Field(
                 ...,

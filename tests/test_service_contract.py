@@ -211,6 +211,50 @@ class TestServiceContract(unittest.TestCase):
         t04_after = next(t.temperature_c for t in live_after.transformers if t.transformer_id == "T04")
         self.assertEqual(t04_before, t04_after)
 
+    def test_close_tie_line_vs_load_transfer_semantics(self) -> None:
+        """Explicitly tests the distinction between non-parameterized close_tie_line and parameterized load_transfer."""
+        self.service.load_scenario("SC01-B")
+
+        # 1. Non-parameterized close_tie_line: takes only line_id, yields default 0.100 MW flow
+        eval_close = self.service.evaluate_action(
+            ActionRequest(
+                action_type="close_tie_line",
+                parameters={"line_id": "L08"},
+            )
+        )
+        self.assertTrue(eval_close.action_valid)
+        self.assertTrue(eval_close.is_stable)
+        self.assertAlmostEqual(eval_close.predicted_line_loadings_pct["L08"], 10.0, delta=0.1)
+
+        # 2. Parameterized load_transfer: takes line_id, source, destination, transfer_mw
+        eval_transfer_50kw = self.service.evaluate_action(
+            ActionRequest(
+                action_type="load_transfer",
+                parameters={
+                    "line_id": "L08",
+                    "source": "N08",
+                    "destination": "N04",
+                    "transfer_mw": 0.050,
+                },
+            )
+        )
+        self.assertTrue(eval_transfer_50kw.action_valid)
+        self.assertAlmostEqual(eval_transfer_50kw.predicted_line_loadings_pct["L08"], 5.0, delta=0.1)
+
+        eval_transfer_100kw = self.service.evaluate_action(
+            ActionRequest(
+                action_type="load_transfer",
+                parameters={
+                    "line_id": "L08",
+                    "source": "N08",
+                    "destination": "N04",
+                    "transfer_mw": 0.100,
+                },
+            )
+        )
+        self.assertTrue(eval_transfer_100kw.action_valid)
+        self.assertAlmostEqual(eval_transfer_100kw.predicted_line_loadings_pct["L08"], 10.0, delta=0.1)
+
 
 if __name__ == "__main__":
     unittest.main()
