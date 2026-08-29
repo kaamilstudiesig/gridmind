@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ title }}</title>
+  <link rel="stylesheet" href="/static/css/dashboard.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700;800&display=swap" rel="stylesheet">
+</head>
+<body>
+
+  <!-- Top Telemetry & Control Bar -->
+  <header class="app-header">
+    <div class="brand-section">
+      <div class="brand-logo">⚡</div>
+      <div class="brand-title">
+        <h1>GRIDMIND <span class="badge-version">v{{ version }}</span></h1>
+        <div class="sub-title">Autonomous Distribution Grid Incident Commander</div>
+      </div>
+    </div>
+
+    <div class="telemetry-strip">
+      <div class="metric-pill">
+        <span class="metric-label">Status</span>
+        <span id="grid-status-badge" class="metric-val nominal">INITIALIZING</span>
+      </div>
+      <div class="metric-pill">
+        <span class="metric-label">System Freq</span>
+        <span id="metric-freq" class="metric-val">60.00 Hz</span>
+      </div>
+      <div class="metric-pill">
+        <span class="metric-label">Ambient Temp</span>
+        <span id="metric-temp" class="metric-val">25.0°C</span>
+      </div>
+      <div class="metric-pill">
+        <span class="metric-label">Demand Mult</span>
+        <span id="metric-demand" class="metric-val">1.00x</span>
+      </div>
+      <div class="metric-pill">
+        <span class="metric-label">State Hash</span>
+        <span id="metric-revision" class="metric-val" style="font-size: 10px;">00000000</span>
+      </div>
+    </div>
+
+    <div class="controls-strip">
+      <div class="scenario-btn-group">
+        <button class="scenario-btn active" data-scenario="SC01">SC01: Line Tripped</button>
+        <button class="scenario-btn" data-scenario="SC01-B">SC01-B: Tie Line Ready</button>
+        <button class="scenario-btn" data-scenario="BASE">BASE: Nominal</button>
+      </div>
+      <button id="btn-analyze-incident" class="btn-action">⚡ Analyze Incident</button>
+    </div>
+  </header>
+
+  <!-- 9-Stage Agent Lifecycle Visualizer -->
+  <div class="lifecycle-tracker">
+    <div class="stage-pipeline">
+      <div class="stage-step" data-stage="1">
+        <div class="stage-dot">1</div>
+        <div class="stage-label">Incident Detect</div>
+      </div>
+      <div class="stage-step" data-stage="2">
+        <div class="stage-dot">2</div>
+        <div class="stage-label">Ops Reasoning</div>
+      </div>
+      <div class="stage-step" data-stage="3">
+        <div class="stage-dot">3</div>
+        <div class="stage-label">Candidates</div>
+      </div>
+      <div class="stage-step" data-stage="4">
+        <div class="stage-dot">4</div>
+        <div class="stage-label">Sandbox Eval</div>
+      </div>
+      <div class="stage-step" data-stage="5">
+        <div class="stage-dot">5</div>
+        <div class="stage-label">Safety Gate</div>
+      </div>
+      <div class="stage-step" data-stage="6">
+        <div class="stage-dot">6</div>
+        <div class="stage-label">Planning</div>
+      </div>
+      <div class="stage-step" data-stage="7">
+        <div class="stage-dot">7</div>
+        <div class="stage-label">Recommendation</div>
+      </div>
+      <div class="stage-step" data-stage="8">
+        <div class="stage-dot">8</div>
+        <div class="stage-label">Human Approval</div>
+      </div>
+      <div class="stage-step" data-stage="9">
+        <div class="stage-dot">9</div>
+        <div class="stage-label">Verification</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- History Mode Notification Banner -->
+  <div id="history-mode-banner" class="history-banner" style="display: none;"></div>
+
+  <!-- Main Command Center Grid -->
+  <main class="dashboard-grid">
+
+    <!-- Left Column: Primary Operation & Simulation Center -->
+    <div style="display: flex; flex-direction: column; gap: 16px;">
+
+      <!-- Human Approval Checkpoint Gate (Interactive Banner when PENDING_APPROVAL) -->
+      <div id="approval-gate-container" style="display: none;"></div>
+
+      <!-- Feeder Topology & Single-Line Diagram -->
+      <section class="panel">
+        <div class="panel-header">
+          <div class="panel-title">
+            <span class="title-icon"></span>
+            Single-Line Feeder Diagram & Telemetry
+          </div>
+          <div style="font-family: var(--font-mono); font-size: 10px; color: var(--text-muted);">
+            Scenario: <strong id="incident-scenario" style="color: var(--text-highlight);">SC01</strong> | Incident: <strong id="incident-title" style="color: #fff;">STANDBY</strong>
+          </div>
+        </div>
+        <div class="panel-body">
+          <div class="topology-container">
+            <svg class="topology-svg" viewBox="0 0 740 210">
+              <defs>
+                <filter id="glow-cyan" x="-20%" y="-20%" width="140%" height="140%">
+                  <feGaussianBlur stdDeviation="3" result="blur" />
+                  <feComposite in="SourceGraphic" in2="blur" operator="over" />
+                </filter>
+              </defs>
+
+              <!-- Feeder A Trunk (N01 -> N02 -> N03 -> N04) -->
+              <line x1="80" y1="55" x2="220" y2="55" class="topo-line feeder-a" />
+              <line x1="220" y1="55" x2="380" y2="55" class="topo-line feeder-a" />
+              <line x1="380" y1="55" x2="560" y2="55" class="topo-line feeder-a" />
+
+              <!-- Feeder B Trunk (N01 -> N05 -> N06 -> N07 -> N08) -->
+              <line x1="80" y1="155" x2="200" y2="155" class="topo-line feeder-b" />
+              <line x1="200" y1="155" x2="340" y2="155" class="topo-line feeder-b" />
+              <line x1="340" y1="155" x2="480" y2="155" class="topo-line feeder-b" />
+              <line x1="480" y1="155" x2="620" y2="155" class="topo-line feeder-b" />
+
+              <!-- Emergency Tie-Line L08 (N08 to N04) -->
+              <line id="svg-line-L08" x1="620" y1="155" x2="560" y2="55" class="topo-line tripped" />
+              <text x="600" y="105" class="topo-text" style="fill: #eab308; font-weight: 700;">L08 (Tie-Line)</text>
+
+              <!-- Substation Node N01 -->
+              <circle cx="80" cy="105" r="16" class="topo-node substation" />
+              <text x="65" y="110" class="topo-text" style="font-weight: 800; fill: #fff;">N01</text>
+              <text x="50" y="80" class="topo-text">Substation</text>
+
+              <!-- Feeder-A Nodes -->
+              <circle cx="220" cy="55" r="11" class="topo-node" />
+              <text x="210" y="59" class="topo-text">N02</text>
+              <text x="205" y="40" class="topo-text">T01 (500kVA)</text>
+
+              <circle cx="380" cy="55" r="11" class="topo-node" />
+              <text x="370" y="59" class="topo-text">N03</text>
+              <text x="365" y="40" class="topo-text">T02 (750kVA)</text>
+
+              <circle cx="560" cy="55" r="14" class="topo-node hospital" />
+              <text x="550" y="59" class="topo-text" style="fill: #fff; font-weight: 700;">N04</text>
+              <text x="520" y="36" class="topo-text" style="fill: #34d399; font-weight: 700;">LZ04 (Hospital 100%)</text>
+
+              <!-- Feeder-B Nodes -->
+              <circle cx="200" cy="155" r="10" class="topo-node" />
+              <text x="190" y="159" class="topo-text">N05</text>
+
+              <circle cx="340" cy="155" r="11" class="topo-node" />
+              <text x="330" y="159" class="topo-text">N06</text>
+              <text x="325" y="178" class="topo-text">T03 (500kVA)</text>
+
+              <circle cx="480" cy="155" r="10" class="topo-node" />
+              <text x="470" y="159" class="topo-text">N07</text>
+
+              <circle id="svg-node-N08" cx="620" cy="155" r="14" class="topo-node commercial tripped" />
+              <text x="610" y="159" class="topo-text" style="fill: #fff; font-weight: 700;">N08</text>
+              <text x="585" y="182" class="topo-text" style="fill: #fb7185; font-weight: 700;">T04 (Peak Heatwave)</text>
+            </svg>
+          </div>
+
+          <!-- Transformer Gauges Grid -->
+          <div id="transformer-gauges" class="transformer-grid"></div>
+        </div>
+      </section>
+
+      <!-- Sandbox Evaluation & Trade-off Matrix -->
+      <section class="panel">
+        <div class="panel-header">
+          <div class="panel-title">
+            <span class="title-icon" style="background: var(--color-cyan);"></span>
+            Sandbox Trade-Off Comparison Matrix (evaluate_action Results)
+          </div>
+        </div>
+        <div class="panel-body">
+          <div class="matrix-table-container">
+            <table class="matrix-table">
+              <thead>
+                <tr>
+                  <th>Cand ID</th>
+                  <th>Action Type</th>
+                  <th>Parameters</th>
+                  <th>Predicted T04</th>
+                  <th>Stability</th>
+                  <th>Violations</th>
+                  <th>Safety Verdict</th>
+                </tr>
+              </thead>
+              <tbody id="sandbox-matrix-body">
+                <tr>
+                  <td colspan="7" style="text-align: center; color: var(--text-muted); padding: 16px;">
+                    No sandbox candidate actions evaluated yet. Click "Analyze Incident" to start.
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- Specialist Advisory Cards -->
+      <section class="panel">
+        <div class="panel-header">
+          <div class="panel-title">
+            <span class="title-icon" style="background: var(--color-purple);"></span>
+            Specialist Advisory Roles (Operations / Safety / Planning)
+          </div>
+        </div>
+        <div class="panel-body">
+          <div id="specialists-container" class="specialists-grid">
+            <div class="specialist-card">
+              <div class="spec-header"><span class="spec-name">Operations Specialist</span></div>
+              <div class="spec-finding text-muted">Awaiting investigation.</div>
+            </div>
+            <div class="specialist-card">
+              <div class="spec-header"><span class="spec-name">Safety Specialist</span></div>
+              <div class="spec-finding text-muted">Awaiting investigation.</div>
+            </div>
+            <div class="specialist-card">
+              <div class="spec-header"><span class="spec-name">Planning Specialist</span></div>
+              <div class="spec-finding text-muted">Awaiting investigation.</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Commander Synthesized Recommendation -->
+      <section class="panel">
+        <div class="panel-header">
+          <div class="panel-title">
+            <span class="title-icon" style="background: #38bdf8;"></span>
+            Commander Recommendation & Tie-Breaking Rationale
+          </div>
+        </div>
+        <div class="panel-body">
+          <div id="recommendation-details" style="font-size: 11px;">
+            <span class="text-muted">No operational recommendation synthesized yet.</span>
+          </div>
+        </div>
+      </section>
+
+    </div>
+
+    <!-- Right Column: Agent Observability Feed & Audit Trail -->
+    <div style="display: flex; flex-direction: column; gap: 16px;">
+
+      <!-- Active Violations Summary Box -->
+      <section class="panel">
+        <div class="panel-header">
+          <div class="panel-title">
+            <span class="title-icon" style="background: var(--color-rose);"></span>
+            Active Constraint Violations
+          </div>
+        </div>
+        <div class="panel-body">
+          <div id="incident-violations" style="font-size: 11px; display: flex; flex-direction: column; gap: 6px;">
+            <span class="text-muted">Zero active violations.</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Real Agent Activity Stream Feed -->
+      <section class="panel" style="flex: 1;">
+        <div class="panel-header">
+          <div class="panel-title">
+            <span class="title-icon" style="background: var(--color-green);"></span>
+            Agent Activity & Tool Execution Stream
+          </div>
+          <span style="font-family: var(--font-mono); font-size: 10px; color: var(--color-green);">● LIVE POLLING</span>
+        </div>
+        <div class="panel-body">
+          <div id="activity-feed-list" class="activity-feed-container">
+            <div style="color: var(--text-muted); font-size: 11px; padding: 12px;">
+              System standby. Real backend tool calls, results, and specialist reasoning will stream here.
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Post-Action Execution & Physical Verification -->
+      <section class="panel">
+        <div class="panel-header">
+          <div class="panel-title">
+            <span class="title-icon" style="background: #38bdf8;"></span>
+            Post-Execution Verification
+          </div>
+          <span id="incident-status" class="badge-tag badge-rec">STANDBY</span>
+        </div>
+        <div class="panel-body">
+          <div id="post-verification-box">
+            <span class="text-muted" style="font-size: 11px;">Awaiting human approval. Live action not executed yet.</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Historical Audit Records Drawer -->
+      <section class="panel">
+        <div class="panel-header">
+          <div class="panel-title">
+            <span class="title-icon" style="background: var(--text-muted);"></span>
+            Durable Audit Trail (SQLite)
+          </div>
+          <button id="btn-refresh-history" class="btn-action" style="padding: 2px 8px; font-size: 10px; background: rgba(255,255,255,0.06); border: 1px solid var(--border-subtle);">
+            🔄 Refresh
+          </button>
+        </div>
+        <div class="panel-body">
+          <div id="audit-history-list" class="audit-history-list">
+            <span class="text-muted" style="font-size: 11px;">No audit records found.</span>
+          </div>
+        </div>
+      </section>
+
+    </div>
+
+  </main>
+
+  <script type="module" src="/static/js/dashboard.js"></script>
+</body>
+</html>
