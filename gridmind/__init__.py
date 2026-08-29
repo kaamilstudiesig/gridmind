@@ -37,14 +37,42 @@ from gridmind.contract import (
     TransformerDTO,
     ViolationDTO,
 )
+from gridmind.audit_store import AuditStore
+from gridmind.commander import (
+    AuditRecord,
+    AuditRecordStatus,
+    CommanderPlanResult,
+    GridMindCommander,
+    rank_safe_candidates,
+)
 from gridmind.http_server import create_http_app, run_http_server
 from gridmind.mcp_server import GridMindMCPServer, create_mcp_server
 from gridmind.service import GridMindService
+from gridmind.specialists import (
+    OperationsSpecialist,
+    PlanningSpecialist,
+    SafetySpecialist,
+    SpecialistResult,
+    SpecialistRole,
+    SpecialistStatus,
+)
 
 __all__ = [
     "GridMindEngine",
     "GridMindService",
+    "GridMindCommander",
     "GridMindMCPServer",
+    "AuditStore",
+    "AuditRecord",
+    "AuditRecordStatus",
+    "CommanderPlanResult",
+    "rank_safe_candidates",
+    "OperationsSpecialist",
+    "SafetySpecialist",
+    "PlanningSpecialist",
+    "SpecialistResult",
+    "SpecialistRole",
+    "SpecialistStatus",
     "create_mcp_server",
     "create_http_app",
     "run_http_server",
