@@ -137,6 +137,10 @@ class OperationsSpecialist:
             )
 
         chosen_candidates = candidates[: self.MAX_CANDIDATES]
+
+        # Assign stable unique candidate_id to each candidate
+        for idx, cand in enumerate(chosen_candidates):
+            cand["candidate_id"] = f"C{idx:02d}"
         default_finding = f"Identified {len(chosen_candidates)} operational candidates to relieve transformer overheating."
         default_rec = "Evaluate operational candidate actions through MCP sandbox isolation before human approval."
 
@@ -177,15 +181,16 @@ class SafetySpecialist:
     def evaluate_candidates(
         self,
         candidates: list[dict[str, Any]],
-        evaluations: list[EvaluationResponse],
+        evaluations_by_id: dict[str, EvaluationResponse],
     ) -> tuple[SpecialistResult, list[dict[str, Any]]]:
         safe_candidates: list[dict[str, Any]] = []
         evidence: list[Any] = []
         risks: list[str] = []
 
-        for candidate, eval_res in zip(candidates, evaluations):
+        for candidate in candidates:
+            cid = candidate["candidate_id"]
+            eval_res = evaluations_by_id[cid]
             act_type = candidate.get("action_type", "unknown")
-            eval_dict = eval_res.to_dict() if hasattr(eval_res, "to_dict") else dict(eval_res)
             evidence.append({
                 "action": candidate,
                 "action_valid": eval_res.action_valid,
@@ -277,7 +282,7 @@ class PlanningSpecialist:
         }]
 
         planning_candidates: list[dict[str, Any]] = []
-        if "T04" in incident_state.overheated_transformers or incident_state.scenario_id in ("SC01", "SC01-B"):
+        if "T04" in incident_state.overheated_transformers:
             planning_candidates.append({
                 "action_type": "transformer_replacement",
                 "parameters": {"transformer_id": "T04", "additional_kva": 250.0},

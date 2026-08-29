@@ -123,6 +123,24 @@ class AuditStore:
             rows = cursor.fetchall()
             return [json.loads(r["record_json"]) for r in rows]
 
+    def claim_for_execution(self, incident_id: str) -> bool:
+        """
+        Atomically transitions a record from PENDING_APPROVAL to a claimed state.
+        Returns True if the claim succeeded (exactly one row transitioned).
+        Returns False if the record was already claimed/executed by another operator.
+        """
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE audit_records
+                SET status = 'EXECUTING', updated_at = ?
+                WHERE incident_id = ? AND status = 'PENDING_APPROVAL';
+                """,
+                (datetime.now(timezone.utc).isoformat(), incident_id),
+            )
+            conn.commit()
+            return cursor.rowcount == 1
+
     def clear(self) -> None:
         """Clears all records from the audit database (used in testing)."""
         with self._get_connection() as conn:

@@ -4,6 +4,8 @@ Service implementation of the GridMind simulator contract.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Optional
 
 from gridmind.contract import (
@@ -69,7 +71,7 @@ class GridMindService:
                 f"Unsupported scenario ID '{scenario_id}'. Supported scenarios: {sorted(SUPPORTED_SCENARIOS)}"
             )
 
-        canonical_id = "SC01-B" if norm_id in ("SC01-B", "SC01_B") else ("SC01" if norm_id == "SC01" else ("BASE" if norm_id == "BASE" else clean_id))
+        canonical_id = {"SC01": "SC01", "SC01-B": "SC01-B", "BASE": "BASE"}.get(norm_id, clean_id)
 
         self.state = load_curated_grid(self.data_dir)
         self.active_scenario_id = canonical_id
@@ -391,3 +393,24 @@ class GridMindService:
             critical_load_service_pct=res.critical_load_service_pct,
             summary=res.summary,
         )
+
+    def get_state_revision(self) -> str:
+        """
+        Returns a deterministic hash of the current grid/scenario state.
+        Used for state-revision revalidation between planning and execution.
+        """
+        res = self.state.latest_result or self.engine.solve(self.state)
+        state_snapshot = {
+            "scenario_id": self.active_scenario_id,
+            "frequency_hz": round(res.frequency_hz, 6),
+            "is_stable": res.is_stable,
+            "transformer_temperatures": {
+                k: round(v, 4) for k, v in sorted(res.transformer_temperatures_c.items())
+            },
+            "line_loadings": {
+                k: round(v, 4) for k, v in sorted(res.line_loadings_pct.items())
+            },
+            "violations": sorted([v.description for v in res.violations]),
+        }
+        snapshot_bytes = json.dumps(state_snapshot, sort_keys=True, ensure_ascii=True).encode()
+        return hashlib.sha256(snapshot_bytes).hexdigest()[:16]

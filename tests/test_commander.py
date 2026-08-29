@@ -216,10 +216,12 @@ class TestGridMindCommander(unittest.TestCase):
     def test_06_deterministic_tie_breaking(self) -> None:
         """Tests that rank_safe_candidates deterministically prefers load_transfer over load_restriction."""
         cand_xfer = {
+            "candidate_id": "C00",
             "action_type": "load_transfer",
             "parameters": {"line_id": "L08", "source": "N08", "destination": "N04", "transfer_mw": 0.100},
         }
         cand_restr = {
+            "candidate_id": "C01",
             "action_type": "load_restriction",
             "parameters": {"target": "N08", "reduction_pct": 15.0},
         }
@@ -249,12 +251,14 @@ class TestGridMindCommander(unittest.TestCase):
             summary="Valid restriction",
         )
 
+        evals_by_id = {"C00": eval_xfer, "C01": eval_restr}
+
         # Order 1: [xfer, restr] -> chooses xfer (disruption priority 1)
-        res1 = rank_safe_candidates([cand_xfer, cand_restr], [eval_xfer, eval_restr])
+        res1 = rank_safe_candidates([cand_xfer, cand_restr], evals_by_id)
         self.assertEqual(res1["action_type"], "load_transfer")
 
         # Order 2: [restr, xfer] -> still chooses xfer (pure deterministic rule)
-        res2 = rank_safe_candidates([cand_restr, cand_xfer], [eval_restr, eval_xfer])
+        res2 = rank_safe_candidates([cand_restr, cand_xfer], evals_by_id)
         self.assertEqual(res2["action_type"], "load_transfer")
 
     def test_07_planning_never_executes(self) -> None:
@@ -518,6 +522,186 @@ class TestGridMindCommander(unittest.TestCase):
         plan = commander.plan_incident_response(incident_id="INC-NO-KEY-01")
         self.assertEqual(plan.status, AuditRecordStatus.PENDING_APPROVAL.value)
         self.assertIsNotNone(plan.recommended_action)
+
+    def test_17_string_approved_raises_error(self) -> None:
+        """Tests that non-boolean approval['approved'] (e.g. 'false' string or int) raises ValueError."""
+        self.service.load_scenario("SC01")
+        plan = self.commander.plan_incident_response(incident_id="INC-BOOL-01")
+
+        # String 'false' must raise ValueError
+        with self.assertRaises(ValueError) as ctx1:
+            self.commander.approve_and_execute(
+                approval={"approved": "false", "approved_by": "operator_test"},
+                plan_result=plan,
+            )
+        self.assertIn("must be a boolean", str(ctx1.exception))
+
+        # String 'true' must raise ValueError
+        with self.assertRaises(ValueError) as ctx2:
+            self.commander.approve_and_execute(
+                approval={"approved": "true", "approved_by": "operator_test"},
+                plan_result=plan,
+            )
+        self.assertIn("must be a boolean", str(ctx2.exception))
+
+        # Integer 1 must raise ValueError
+        with self.assertRaises(ValueError) as ctx3:
+            self.commander.approve_and_execute(
+                approval={"approved": 1, "approved_by": "operator_test"},
+                plan_result=plan,
+            )
+        self.assertIn("must be a boolean", str(ctx3.exception))
+
+        # Missing 'approved' must raise ValueError
+        with self.assertRaises(ValueError) as ctx4:
+            self.commander.approve_and_execute(
+                approval={"approved_by": "operator_test"},
+                plan_result=plan,
+            )
+        self.assertIn("must be a boolean", str(ctx4.exception))
+
+    def test_18_duplicate_action_type_candidates_keep_separate_evaluations(self) -> None:
+        """Tests that multiple candidates with identical action_type maintain separate evaluations by candidate_id."""
+        cand_restr_10 = {
+            "candidate_id": "C00",
+            "action_type": "load_restriction",
+            "parameters": {"target": "N08", "reduction_pct": 10.0},
+        }
+        cand_restr_20 = {
+            "candidate_id": "C01",
+            "action_type": "load_restriction",
+            "parameters": {"target": "N08", "reduction_pct": 20.0},
+        }
+
+        eval_restr_10 = EvaluationResponse(
+            action_valid=True,
+            rejection_reason=None,
+            is_stable=True,
+            violations=[],
+            predicted_frequency_hz=60.0,
+            predicted_total_demand_kw=950.0,
+            predicted_line_loadings_pct={},
+            predicted_transformer_temperatures_c={"T04": 105.0, "T02": 78.0},
+            critical_load_service_pct={"LZ04": 100.0},
+            summary="10% reduction leaves T04 at 105C",
+        )
+        eval_restr_20 = EvaluationResponse(
+            action_valid=True,
+            rejection_reason=None,
+            is_stable=True,
+            violations=[],
+            predicted_frequency_hz=60.0,
+            predicted_total_demand_kw=850.0,
+            predicted_line_loadings_pct={},
+            predicted_transformer_temperatures_c={"T04": 95.0, "T02": 78.0},
+            critical_load_service_pct={"LZ04": 100.0},
+            summary="20% reduction leaves T04 at 95C",
+        )
+
+        evals_by_id = {"C00": eval_restr_10, "C01": eval_restr_20}
+
+        # Candidate ranking must select C01 (20% reduction) because of lower max temperature (95C < 105C)
+        selected1 = rank_safe_candidates([cand_restr_10, cand_restr_20], evals_by_id)
+        self.assertIsNotNone(selected1)
+        self.assertEqual(selected1["candidate_id"], "C01")
+        self.assertEqual(selected1["parameters"]["reduction_pct"], 20.0)
+
+        # Reverse order must still deterministically choose C01
+        selected2 = rank_safe_candidates([cand_restr_20, cand_restr_10], evals_by_id)
+        self.assertIsNotNone(selected2)
+        self.assertEqual(selected2["candidate_id"], "C01")
+        self.assertEqual(selected2["parameters"]["reduction_pct"], 20.0)
+
+    def test_19_double_approval_rejected(self) -> None:
+        """Tests that double-approving the same incident is rejected atomically."""
+        self.service.load_scenario("SC01")
+        plan = self.commander.plan_incident_response(incident_id="INC-DOUBLE-01")
+        self.assertEqual(plan.status, AuditRecordStatus.PENDING_APPROVAL.value)
+
+        # First approval succeeds
+        record = self.commander.approve_and_execute(
+            approval={"approved": True, "approved_by": "operator_alice"},
+            plan_result=plan,
+        )
+        self.assertEqual(record.status, AuditRecordStatus.VERIFIED.value)
+
+        # Second approval on the same plan_result must raise ValueError
+        with self.assertRaises(ValueError) as ctx1:
+            self.commander.approve_and_execute(
+                approval={"approved": True, "approved_by": "operator_bob"},
+                plan_result=plan,
+            )
+        self.assertTrue(
+            "Cannot approve record with status" in str(ctx1.exception)
+            or "already claimed" in str(ctx1.exception)
+        )
+
+        # Second approval by incident_id must also raise ValueError
+        with self.assertRaises(ValueError) as ctx2:
+            self.commander.approve_and_execute(
+                approval={"approved": True, "approved_by": "operator_bob"},
+                incident_id="INC-DOUBLE-01",
+            )
+        self.assertTrue(
+            "Cannot approve record with status" in str(ctx2.exception)
+            or "already claimed" in str(ctx2.exception)
+        )
+
+    def test_20_state_change_between_plan_and_approval_refuses_execution(self) -> None:
+        """Tests that grid state changes between planning and execution trigger STALE_STATE and refuse execution."""
+        self.service.load_scenario("SC01")
+        plan = self.commander.plan_incident_response(incident_id="INC-STALE-01")
+        self.assertEqual(plan.status, AuditRecordStatus.PENDING_APPROVAL.value)
+
+        # State changes on the grid before approval (e.g. reload or new event)
+        self.service.load_scenario("SC01-B")
+
+        # Approval attempt should detect state mismatch and raise ValueError
+        with self.assertRaises(ValueError) as ctx:
+            self.commander.approve_and_execute(
+                approval={"approved": True, "approved_by": "operator_alice"},
+                plan_result=plan,
+            )
+        self.assertIn("Grid state changed since planning", str(ctx.exception))
+
+        # Persistent record must reflect STALE_STATE
+        saved = self.audit_store.get("INC-STALE-01")
+        self.assertIsNotNone(saved)
+        self.assertEqual(saved["status"], AuditRecordStatus.STALE_STATE.value)
+
+    def test_21_execution_refused_by_service_distinct_from_unstable(self) -> None:
+        """Tests that execution refused by the service produces EXECUTION_REJECTED (distinct from EXECUTED_UNVERIFIED)."""
+        self.service.load_scenario("SC01")
+        plan = self.commander.plan_incident_response(incident_id="INC-REFUSED-01")
+
+        # Manually alter recommended_action to an invalid action (transferring over tripped line L08 in SC01)
+        plan.audit_record.recommended_action = {
+            "action_type": "load_transfer",
+            "parameters": {"line_id": "L08", "source": "N08", "destination": "N04", "transfer_mw": 0.1},
+        }
+
+        record = self.commander.approve_and_execute(
+            approval={"approved": True, "approved_by": "operator_test"},
+            plan_result=plan,
+        )
+
+        self.assertEqual(record.status, AuditRecordStatus.EXECUTION_REJECTED.value)
+        self.assertFalse(record.execution["executed"])
+        self.assertIsNotNone(record.execution["response"])
+        self.assertFalse(record.execution["response"]["success"])
+
+    def test_22_base_scenario_nominal_no_fabricated_planning(self) -> None:
+        """Tests that a stable baseline grid yields NOMINAL status with no fabricated planning recommendations."""
+        self.service.load_scenario("BASE")
+        plan = self.commander.plan_incident_response(incident_id="INC-NOMINAL-01")
+
+        self.assertEqual(plan.status, AuditRecordStatus.NOMINAL.value)
+        self.assertIsNone(plan.recommended_action)
+        self.assertEqual(plan.specialist_results["planning"].candidates, [])
+
+        saved = self.audit_store.get("INC-NOMINAL-01")
+        self.assertIsNotNone(saved)
+        self.assertEqual(saved["status"], AuditRecordStatus.NOMINAL.value)
 
 
 if __name__ == "__main__":

@@ -34,6 +34,9 @@ class AuditRecordStatus(str, Enum):
     ESCALATED = "ESCALATED"
     NO_SAFE_ACTION = "NO_SAFE_ACTION"
     REJECTED_BY_HUMAN = "REJECTED_BY_HUMAN"
+    NOMINAL = "NOMINAL"
+    EXECUTION_REJECTED = "EXECUTION_REJECTED"
+    STALE_STATE = "STALE_STATE"
 
 
 @dataclass
@@ -68,6 +71,7 @@ class AuditRecord:
         }
     )
     status: str = AuditRecordStatus.PENDING_APPROVAL.value
+    state_revision: str = ""
     created_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
@@ -102,7 +106,7 @@ class CommanderPlanResult:
 
 def rank_safe_candidates(
     safe_candidates: list[dict[str, Any]],
-    evaluations: list[EvaluationResponse],
+    evaluations_by_id: dict[str, EvaluationResponse],
 ) -> Optional[dict[str, Any]]:
     """
     Pure, deterministic tie-breaking function for selecting the primary operational intervention.
@@ -127,16 +131,13 @@ def rank_safe_candidates(
         "isolate_transformer": 3,
     }
 
-    eval_by_type = {
-        c.get("action_type"): ev for c, ev in zip(safe_candidates, evaluations) if c.get("action_type")
-    }
-
     def candidate_sort_key(item: tuple[int, dict[str, Any]]) -> tuple[int, float, int]:
         idx, cand = item
         atype = cand.get("action_type", "")
         prio = type_priority.get(atype, 99)
 
-        ev = eval_by_type.get(atype)
+        cid = cand.get("candidate_id", "")
+        ev = evaluations_by_id.get(cid)
         max_temp = 999.0
         if ev and ev.predicted_transformer_temperatures_c:
             max_temp = max(ev.predicted_transformer_temperatures_c.values())
@@ -188,6 +189,7 @@ class GridMindCommander:
         inc_id = incident_id or f"INC-{uuid.uuid4().hex[:8].upper()}"
         inc_state = self.service.get_incident_state()
         grid_state = self.service.get_grid_state()
+        state_revision = self.service.get_state_revision()
 
         pre_evidence: list[Any] = [{
             "scenario_id": inc_state.scenario_id,
@@ -213,6 +215,7 @@ class GridMindCommander:
                 pre_state_evidence=pre_evidence,
                 specialist_results={"operations": op_result.to_dict()},
                 status=AuditRecordStatus.ESCALATED.value,
+                state_revision=state_revision,
             )
             self.audit_store.save(record)
             return CommanderPlanResult(
@@ -224,24 +227,47 @@ class GridMindCommander:
                 audit_record=record,
             )
 
+        # NOMINAL: Operations found zero candidates and grid is stable with no violations
         candidates = op_result.candidates
+        if not candidates and inc_state.is_stable and not inc_state.active_violations:
+            planning_result = self.planning.analyze_long_term(inc_state, [])
+            specialist_results["planning"] = planning_result
+            record = AuditRecord(
+                incident_id=inc_id,
+                scenario_id=inc_state.scenario_id,
+                recommended_action=None,
+                pre_state_evidence=pre_evidence,
+                specialist_results={k: v.to_dict() for k, v in specialist_results.items()},
+                status=AuditRecordStatus.NOMINAL.value,
+                state_revision=state_revision,
+            )
+            self.audit_store.save(record)
+            return CommanderPlanResult(
+                incident_id=inc_id,
+                scenario_id=inc_state.scenario_id,
+                status=AuditRecordStatus.NOMINAL.value,
+                recommended_action=None,
+                specialist_results=specialist_results,
+                audit_record=record,
+            )
+
         if len(candidates) > OperationsSpecialist.MAX_CANDIDATES:
             raise ValueError(
                 f"Candidate count {len(candidates)} exceeds MAX_CANDIDATES={OperationsSpecialist.MAX_CANDIDATES}"
             )
 
         # Step 3: Evaluate Candidates in Sandbox
-        evaluations: list[EvaluationResponse] = []
+        evaluations_by_id: dict[str, EvaluationResponse] = {}
         for cand in candidates:
             req = ActionRequest(
                 action_type=cand["action_type"],
                 parameters=cand.get("parameters", {}),
             )
             eval_res = self.service.evaluate_action(req)
-            evaluations.append(eval_res)
+            evaluations_by_id[cand["candidate_id"]] = eval_res
 
         # Step 4: Safety Specialist
-        safety_result, safe_candidates = self.safety.evaluate_candidates(candidates, evaluations)
+        safety_result, safe_candidates = self.safety.evaluate_candidates(candidates, evaluations_by_id)
         specialist_results["safety"] = safety_result
 
         # Short-circuit on Safety ESCALATE
@@ -253,6 +279,7 @@ class GridMindCommander:
                 pre_state_evidence=pre_evidence,
                 specialist_results={k: v.to_dict() for k, v in specialist_results.items()},
                 status=AuditRecordStatus.ESCALATED.value,
+                state_revision=state_revision,
             )
             self.audit_store.save(record)
             return CommanderPlanResult(
@@ -278,6 +305,7 @@ class GridMindCommander:
                 pre_state_evidence=pre_evidence,
                 specialist_results={k: v.to_dict() for k, v in specialist_results.items()},
                 status=AuditRecordStatus.NO_SAFE_ACTION.value,
+                state_revision=state_revision,
             )
             self.audit_store.save(record)
             return CommanderPlanResult(
@@ -290,7 +318,7 @@ class GridMindCommander:
             )
 
         # Apply deterministic tie-breaking rule
-        recommended_action = rank_safe_candidates(safe_candidates, evaluations)
+        recommended_action = rank_safe_candidates(safe_candidates, evaluations_by_id)
 
         # Step 8: STOP at Human Approval Gate (PENDING_APPROVAL)
         record = AuditRecord(
@@ -300,6 +328,7 @@ class GridMindCommander:
             pre_state_evidence=pre_evidence,
             specialist_results={k: v.to_dict() for k, v in specialist_results.items()},
             status=AuditRecordStatus.PENDING_APPROVAL.value,
+            state_revision=state_revision,
         )
         self.audit_store.save(record)
 
@@ -320,10 +349,20 @@ class GridMindCommander:
     ) -> AuditRecord:
         """
         Processes human approval or rejection:
+        - Validates approval['approved'] is a strict bool.
+        - Enforces PENDING_APPROVAL status via atomic SQLite claim.
+        - Validates grid state has not changed since planning.
         - If approval['approved'] is False: records rejection, sets REJECTED_BY_HUMAN, and does NOT execute.
         - If approval['approved'] is True: dispatches execute_action, obtains post-action grid state,
-          and marks VERIFIED (if safe) or EXECUTED_UNVERIFIED.
+          and marks VERIFIED (if safe), EXECUTED_UNVERIFIED, or EXECUTION_REJECTED.
         """
+        # Strict boolean approval check (Bug 1)
+        approved_value = approval.get("approved")
+        if not isinstance(approved_value, bool):
+            raise ValueError(
+                f"approval['approved'] must be a boolean, got {type(approved_value).__name__}: {approved_value!r}"
+            )
+
         # Resolve target AuditRecord
         if plan_result:
             record = plan_result.audit_record
@@ -335,9 +374,19 @@ class GridMindCommander:
         else:
             raise ValueError("Must provide either plan_result or incident_id to approve_and_execute")
 
+        # PENDING_APPROVAL guard (Bug 3)
+        if record.status != AuditRecordStatus.PENDING_APPROVAL.value:
+            raise ValueError(
+                f"Cannot approve record with status '{record.status}'; expected '{AuditRecordStatus.PENDING_APPROVAL.value}'"
+            )
+        if not self.audit_store.claim_for_execution(record.incident_id):
+            raise ValueError(
+                f"Record '{record.incident_id}' was already claimed or executed by another operator."
+            )
+
         now_iso = datetime.now(timezone.utc).isoformat()
         approval_payload = {
-            "approved": bool(approval.get("approved", False)),
+            "approved": approved_value,
             "approved_by": approval.get("approved_by"),
             "reason": approval.get("reason"),
             "timestamp": approval.get("timestamp", now_iso),
@@ -345,7 +394,7 @@ class GridMindCommander:
         record.approval = approval_payload
 
         # Case A: Explicit Human Rejection
-        if not approval_payload["approved"]:
+        if not approved_value:
             record.status = AuditRecordStatus.REJECTED_BY_HUMAN.value
             record.execution = {"executed": False, "response": None, "reason": "Operator rejected action."}
             record.verification = {"verified": False, "post_state_stable": False, "active_violations": []}
@@ -359,6 +408,16 @@ class GridMindCommander:
                 f"Cannot execute incident '{record.incident_id}': No recommended_action present in record."
             )
 
+        # State-revision revalidation (Bug 4)
+        current_revision = self.service.get_state_revision()
+        if current_revision != record.state_revision:
+            record.status = AuditRecordStatus.STALE_STATE.value
+            self.audit_store.save(record)
+            raise ValueError(
+                f"Grid state changed since planning (was {record.state_revision}, now {current_revision}). "
+                f"Re-plan required."
+            )
+
         # 1. Dispatch execution via Service
         req = ActionRequest(
             action_type=rec_action["action_type"],
@@ -366,6 +425,16 @@ class GridMindCommander:
         )
         exec_resp = self.service.execute_action(req)
         exec_dict = exec_resp.to_dict()
+
+        # Execution-refused distinction (Bug 5)
+        if not exec_resp.success:
+            record.execution = {
+                "executed": False,
+                "response": exec_dict,
+            }
+            record.status = AuditRecordStatus.EXECUTION_REJECTED.value
+            self.audit_store.save(record)
+            return record
 
         # 2. Immediately inspect post-action live grid state
         post_grid = self.service.get_grid_state()
@@ -375,7 +444,7 @@ class GridMindCommander:
         # - Execution succeeded
         # - Grid is physically stable
         # - Zero hard constraint violations
-        is_verified = bool(exec_resp.success and post_grid.is_stable and len(post_violations) == 0)
+        is_verified = bool(post_grid.is_stable and len(post_violations) == 0)
 
         record.execution = {
             "executed": True,
