@@ -62,15 +62,19 @@ class GridMindService:
         For SC01-B: applies heatwave environment and spikes N08 with L08 operational.
         Rejects unsupported scenario IDs before mutating live state.
         """
-        if scenario_id not in SUPPORTED_SCENARIOS:
+        clean_id = scenario_id.strip()
+        norm_id = clean_id.upper().replace("_", "-")
+        if norm_id not in ("SC01", "SC01-B", "BASE") and clean_id not in SUPPORTED_SCENARIOS:
             raise ValueError(
                 f"Unsupported scenario ID '{scenario_id}'. Supported scenarios: {sorted(SUPPORTED_SCENARIOS)}"
             )
 
-        self.state = load_curated_grid(self.data_dir)
-        self.active_scenario_id = scenario_id
+        canonical_id = "SC01-B" if norm_id in ("SC01-B", "SC01_B") else ("SC01" if norm_id == "SC01" else ("BASE" if norm_id == "BASE" else clean_id))
 
-        if scenario_id in ("SC01", "SC01-B", "SC01_B"):
+        self.state = load_curated_grid(self.data_dir)
+        self.active_scenario_id = canonical_id
+
+        if canonical_id in ("SC01", "SC01-B"):
             # 1. Heatwave environment
             self.engine.apply_event(
                 self.state,
@@ -80,7 +84,7 @@ class GridMindService:
                 ),
             )
             # 2. Lockout on L08 (SC01 only; SC01-B keeps L08 operational/open)
-            if scenario_id == "SC01":
+            if canonical_id == "SC01":
                 self.engine.apply_event(
                     self.state,
                     IncidentEvent(

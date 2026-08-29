@@ -142,6 +142,36 @@ class TestScenarioSC01B(unittest.TestCase):
         self.assertEqual(l08.status, LineStatus.CLOSED.value)
         self.assertAlmostEqual(l08.flow_kw, 100.0, delta=0.1)
 
+    def test_sc01_b_service_bidirectional_transitions(self) -> None:
+        """Tests that service layer cleanly resets state when transitioning SC01 <-> SC01-B."""
+        service = GridMindService(data_dir="gridmind_data/curated")
+
+        # 1. Load SC01-B
+        inc_b = service.load_scenario("SC01-B")
+        self.assertEqual(inc_b.scenario_id, "SC01-B")
+        self.assertNotIn("L08", inc_b.tripped_lines)
+        grid_b = service.get_grid_state()
+        l08_b = next(l for l in grid_b.lines if l.line_id == "L08")
+        self.assertEqual(l08_b.status, LineStatus.OPEN.value)
+        self.assertEqual(l08_b.flow_kw, 0.0)
+
+        # 2. Transition SC01-B -> SC01
+        inc_sc01 = service.load_scenario("SC01")
+        self.assertEqual(inc_sc01.scenario_id, "SC01")
+        self.assertIn("L08", inc_sc01.tripped_lines)
+        grid_sc01 = service.get_grid_state()
+        l08_sc01 = next(l for l in grid_sc01.lines if l.line_id == "L08")
+        self.assertEqual(l08_sc01.status, LineStatus.TRIPPED.value)
+
+        # 3. Transition SC01 -> SC01-B
+        inc_b2 = service.load_scenario("SC01-B")
+        self.assertEqual(inc_b2.scenario_id, "SC01-B")
+        self.assertNotIn("L08", inc_b2.tripped_lines)
+        grid_b2 = service.get_grid_state()
+        l08_b2 = next(l for l in grid_b2.lines if l.line_id == "L08")
+        self.assertEqual(l08_b2.status, LineStatus.OPEN.value)
+        self.assertEqual(l08_b2.flow_kw, 0.0)
+
 
 class TestScenarioSC01BMCP(unittest.IsolatedAsyncioTestCase):
     """Tests MCP tool invocation specifically against SC01-B scenario."""
@@ -200,6 +230,52 @@ class TestScenarioSC01BMCP(unittest.IsolatedAsyncioTestCase):
         # 4. Verify live grid state
         grid_res = await self._call_tool_json("get_grid_state", {})
         self.assertTrue(grid_res["is_stable"])
+
+    async def test_sc01_b_mcp_bidirectional_transitions_and_inspection(self) -> None:
+        """Tests bidirectional SC01 <-> SC01-B transitions and state inspection via MCP."""
+        # 1. Load SC01-B
+        load_b = await self._call_tool_json("load_scenario", {"scenario_id": "SC01-B"})
+        self.assertEqual(load_b["scenario_id"], "SC01-B")
+        self.assertFalse(load_b["is_stable"])
+        self.assertNotIn("L08", load_b["tripped_lines"])
+        self.assertIn("T04", load_b["overheated_transformers"])
+        self.assertEqual(load_b["unserved_critical_loads"], [])
+
+        # 2. get_grid_state immediately after loading SC01-B
+        grid_b = await self._call_tool_json("get_grid_state", {})
+        self.assertFalse(grid_b["is_stable"])
+        l08_b = next(line for line in grid_b["lines"] if line["line_id"] == "L08")
+        self.assertEqual(l08_b["status"], LineStatus.OPEN.value)
+        self.assertEqual(l08_b["flow_kw"], 0.0)
+        self.assertEqual(l08_b["loading_pct"], 0.0)
+        t04_b = next(t for t in grid_b["transformers"] if t["transformer_id"] == "T04")
+        self.assertAlmostEqual(t04_b["temperature_c"], 112.65, delta=0.2)
+
+        # 3. get_incident_state immediately after loading SC01-B
+        inc_b = await self._call_tool_json("get_incident_state", {})
+        self.assertEqual(inc_b["scenario_id"], "SC01-B")
+        self.assertNotIn("L08", inc_b["tripped_lines"])
+
+        # 4. Transition: SC01-B -> SC01
+        load_sc01 = await self._call_tool_json("load_scenario", {"scenario_id": "SC01"})
+        self.assertEqual(load_sc01["scenario_id"], "SC01")
+        self.assertFalse(load_sc01["is_stable"])
+        self.assertIn("L08", load_sc01["tripped_lines"])
+
+        grid_sc01 = await self._call_tool_json("get_grid_state", {})
+        l08_sc01 = next(line for line in grid_sc01["lines"] if line["line_id"] == "L08")
+        self.assertEqual(l08_sc01["status"], LineStatus.TRIPPED.value)
+
+        # 5. Transition: SC01 -> SC01-B
+        load_b_again = await self._call_tool_json("load_scenario", {"scenario_id": "SC01-B"})
+        self.assertEqual(load_b_again["scenario_id"], "SC01-B")
+        self.assertFalse(load_b_again["is_stable"])
+        self.assertNotIn("L08", load_b_again["tripped_lines"])
+
+        grid_b_again = await self._call_tool_json("get_grid_state", {})
+        l08_b_again = next(line for line in grid_b_again["lines"] if line["line_id"] == "L08")
+        self.assertEqual(l08_b_again["status"], LineStatus.OPEN.value)
+        self.assertEqual(l08_b_again["flow_kw"], 0.0)
 
 
 if __name__ == "__main__":
