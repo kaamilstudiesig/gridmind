@@ -122,31 +122,43 @@ pip install -e ".[dev]"
 
 ### 2. Configure Environment Variables
 
-Copy `.env.example` to `.env` and configure your API keys:
+Copy `.env.example` to `.env` and configure your API keys (optional):
 
 ```bash
 cp .env.example .env
 ```
 
-| Variable | Description | Default |
-| :--- | :--- | :--- |
-| `OPENROUTER_API_KEY` | OpenRouter API key for LLM narrative synthesis | *Optional (enables live LLM)* |
-| `OPENAI_API_KEY` | Alternative OpenAI API key | *Optional fallback* |
-| `TRUEFORGE_API_KEY` | Alternative TrueForge LLM proxy key | *Optional fallback* |
-| `LLM_BASE_URL` | OpenAI-compatible endpoint URL | `https://openrouter.ai/api/v1` |
-| `LLM_MODEL` | LLM model for specialist synthesis | `openrouter/free` |
-| `GRIDMIND_AUTH_TOKENS`| Custom operator JSON token mapping | Built-in dev tokens |
-| `HOST` / `PORT` | Server host and port | `127.0.0.1` / `8000` |
+GridMind supports three self-consistent LLM provider modes:
+
+| Provider Option | Required Key | Default Endpoint (`LLM_BASE_URL`) | Default Model (`LLM_MODEL`) |
+| :--- | :--- | :--- | :--- |
+| **Option A: OpenRouter** *(Default)* | `OPENROUTER_API_KEY` | `https://openrouter.ai/api/v1` | `openrouter/free` |
+| **Option B: OpenAI Direct** | `OPENAI_API_KEY` | `https://api.openai.com/v1` | `gpt-4o-mini` |
+| **Option C: TrueForge Proxy** | `TRUEFORGE_API_KEY` | Explicit proxy URL (e.g. `https://proxy.trueforge.ai/v1`) | `default` |
+| **Deterministic Mode** | *None (leave blank)* | *N/A (no network requests)* | `[DEGRADED_MODE]` fallback |
+
+Additional server environment variables:
+- `HOST`: Host interface to bind (default: `127.0.0.1`)
+- `PORT`: Unified server port (default: `8080`)
+- `GRIDMIND_AUTH_TOKENS`: Custom JSON mapping for operator Bearer tokens
 
 > [!NOTE]
 > GridMind is designed to run seamlessly **without any LLM API keys**. If no credentials are configured, GridMind operates in deterministic `[DEGRADED_MODE]` without crashing.
 
-### 3. Start the MCP Server
+### 3. Start the Unified Command Center & MCP Server
+
+GridMind runs as a **single unified ASGI process**, ensuring the Command Center Dashboard and the Model Context Protocol (MCP) server share the exact same singleton `GridMindService`, `GridMindCommander`, and `AuditStore` instances:
 
 ```bash
-# Start Streamable HTTP & SSE MCP server on port 8000
-python -m gridmind.http_server --host 127.0.0.1 --port 8000
+# Start Unified Server on port 8080 (serves Dashboard UI, REST APIs, and MCP transports)
+python -m dashboard.app --host 127.0.0.1 --port 8080
 ```
+
+The unified server exposes:
+- **Web Dashboard**: `http://127.0.0.1:8080/`
+- **Streamable HTTP MCP Transport**: `http://127.0.0.1:8080/mcp`
+- **SSE MCP Transport**: `http://127.0.0.1:8080/sse`
+- **Health & Tool Discovery**: `http://127.0.0.1:8080/health`
 
 The server exposes 6 standard MCP tools:
 - `get_grid_state` (*read-only*): Inspect live voltages, frequency, line loadings, and transformer temperatures.
@@ -158,17 +170,11 @@ The server exposes 6 standard MCP tools:
 
 ### 4. Connect TrueForge
 
-Point TrueForge's MCP configuration at:
-- **Streamable HTTP Endpoint**: `http://127.0.0.1:8000/mcp`
-- **SSE Fallback Endpoint**: `http://127.0.0.1:8000/sse`
+Point TrueForge's MCP configuration at the unified server:
+- **Streamable HTTP Endpoint**: `http://127.0.0.1:8080/mcp`
+- **SSE Fallback Endpoint**: `http://127.0.0.1:8080/sse`
 
-### 5. Start the Command Center Dashboard
-
-In a separate terminal, launch the operator web dashboard:
-
-```bash
-python -m dashboard.app --host 127.0.0.1 --port 8080
-```
+### 5. Access the Operator Command Center
 
 Open `http://127.0.0.1:8080` in your browser. Default operator credentials:
 - **Lead Operator**: Bearer token `gm-lead-token-secret` (user: `operator_alice`, role: `operator_lead`)

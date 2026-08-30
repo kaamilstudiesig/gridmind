@@ -645,6 +645,24 @@ class TestDashboard(unittest.TestCase):
         self.assertEqual(plan_resp.status_code, 200)
         self.assertIn("incident_id", plan_resp.json())
 
+    def test_38_unified_app_mounts_mcp_and_shares_service_state(self) -> None:
+        """Tests that Dashboard app mounts MCP routes and shares the exact same GridMindService state."""
+        # 1. Check health endpoint exposed on dashboard app
+        health_resp = self.client.get("/health")
+        self.assertEqual(health_resp.status_code, 200)
+        data = health_resp.json()
+        self.assertEqual(data["status"], "healthy")
+        self.assertEqual(data["service"], "gridmind-unified")
+        self.assertEqual(len(data["tools"]), 6)
+
+        # 2. Loading scenario via dashboard updates the underlying shared service
+        self.client.post("/api/scenario/load", json={"scenario_id": "SC01-B"}, headers=OPERATOR_AUTH)
+        self.assertEqual(self.service.active_scenario_id, "SC01-B")
+
+        # 3. Check health endpoint now reflects active scenario
+        health_after = self.client.get("/health").json()
+        self.assertEqual(health_after["active_scenario"], "SC01-B")
+
 
 if __name__ == "__main__":
     unittest.main()

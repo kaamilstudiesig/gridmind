@@ -39,24 +39,39 @@ class LLMClient:
         timeout: float = 12.0,
         max_retries: int = 2,
     ) -> None:
-        self.api_key = (
-            api_key
-            or os.environ.get("OPENROUTER_API_KEY")
-            or os.environ.get("OPENAI_API_KEY")
-            or os.environ.get("TRUEFORGE_API_KEY")
-        )
-        self.base_url = (
-            base_url
-            or os.environ.get("LLM_BASE_URL")
-            or os.environ.get("OPENAI_BASE_URL")
-            or "https://openrouter.ai/api/v1"
-        ).rstrip("/")
-        self.model = (
-            model
-            or os.environ.get("LLM_MODEL")
-            or os.environ.get("OPENROUTER_MODEL")
-            or "openrouter/free"
-        )
+        # Resolve provider credentials, base URL, and default model
+        explicit_key = api_key
+        openrouter_key = os.environ.get("OPENROUTER_API_KEY")
+        openai_key = os.environ.get("OPENAI_API_KEY")
+        trueforge_key = os.environ.get("TRUEFORGE_API_KEY")
+
+        if explicit_key:
+            self.api_key = explicit_key
+            self.base_url = (base_url or os.environ.get("LLM_BASE_URL") or "https://openrouter.ai/api/v1").rstrip("/")
+            self.model = model or os.environ.get("LLM_MODEL") or "openrouter/free"
+        elif openrouter_key:
+            self.api_key = openrouter_key
+            self.base_url = (base_url or os.environ.get("LLM_BASE_URL") or os.environ.get("OPENROUTER_BASE_URL") or "https://openrouter.ai/api/v1").rstrip("/")
+            self.model = model or os.environ.get("LLM_MODEL") or os.environ.get("OPENROUTER_MODEL") or "openrouter/free"
+        elif openai_key:
+            self.api_key = openai_key
+            self.base_url = (base_url or os.environ.get("LLM_BASE_URL") or os.environ.get("OPENAI_BASE_URL") or "https://api.openai.com/v1").rstrip("/")
+            self.model = model or os.environ.get("LLM_MODEL") or os.environ.get("OPENAI_MODEL") or "gpt-4o-mini"
+        elif trueforge_key:
+            self.api_key = trueforge_key
+            tf_base = base_url or os.environ.get("LLM_BASE_URL") or os.environ.get("TRUEFORGE_BASE_URL")
+            if not tf_base:
+                raise ValueError(
+                    "TRUEFORGE_API_KEY is configured but LLM_BASE_URL (or TRUEFORGE_BASE_URL) is missing. "
+                    "TrueForge requires an explicit proxy base URL."
+                )
+            self.base_url = tf_base.rstrip("/")
+            self.model = model or os.environ.get("LLM_MODEL") or os.environ.get("TRUEFORGE_MODEL") or "default"
+        else:
+            self.api_key = None
+            self.base_url = (base_url or os.environ.get("LLM_BASE_URL") or "https://openrouter.ai/api/v1").rstrip("/")
+            self.model = model or os.environ.get("LLM_MODEL") or "openrouter/free"
+
         self.timeout = timeout
         self.max_retries = max_retries
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
@@ -27,6 +28,7 @@ from gridmind.audit_store import AuditStore
 from gridmind.commander import AuditRecord, AuditRecordStatus, GridMindCommander
 from gridmind.contract import GridStateResponse, IncidentStateResponse
 from gridmind.llm import LLMClient
+from gridmind.mcp_server import GridMindMCPServer
 from gridmind.service import GridMindService, SUPPORTED_SCENARIOS
 
 logger = logging.getLogger("gridmind.dashboard")
@@ -363,24 +365,51 @@ def create_dashboard_app(
     commander: Optional[GridMindCommander] = None,
     data_dir: str = "gridmind_data/curated",
     llm_client: Optional[LLMClient] = None,
+    mount_mcp: bool = True,
 ) -> FastAPI:
     """
     Factory function creating the GridMind Command Center FastAPI application.
+    Hosts the operator dashboard UI, authenticated REST APIs, and mounts the
+    Streamable HTTP & SSE MCP server on a single unified process.
     """
     app_service = service or GridMindService(data_dir=data_dir)
     app_audit_store = audit_store or AuditStore()
-    app_llm = llm_client or LLMClient()
+    app_llm = llm_client or (commander.llm_client if commander else None) or LLMClient()
     app_commander = commander or GridMindCommander(
         service=app_service,
         audit_store=app_audit_store,
         llm_client=app_llm,
     )
 
+    # Initialize MCP Server wrapper sharing the exact same singleton service & commander
+    mcp_wrapper = GridMindMCPServer(
+        service=app_service,
+        commander=app_commander,
+        audit_store=app_audit_store,
+        data_dir=data_dir,
+    )
+    mcp_server = mcp_wrapper.server
+
+    streamable_app = mcp_server.streamable_http_app(streamable_http_path="/mcp")
+    sse_app = mcp_server.sse_app(sse_path="/sse", message_path="/messages")
+
+    @asynccontextmanager
+    async def app_lifespan(app: FastAPI):
+        async with mcp_server.session_manager.run():
+            yield
+
     app = FastAPI(
         title="GridMind Command Center",
         description="Operational command-center and observability dashboard for GridMind Agentic Orchestration",
         version="0.1.0",
+        lifespan=app_lifespan if mount_mcp else None,
     )
+
+    if mount_mcp:
+        for route in streamable_app.routes:
+            app.router.routes.append(route)
+        for route in sse_app.routes:
+            app.router.routes.append(route)
 
     # Ensure static and template directories exist
     TEMPLATES_DIR.mkdir(parents=True, exist_ok=True)
@@ -390,6 +419,34 @@ def create_dashboard_app(
 
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     templates = Jinja2Templates(directory=TEMPLATES_DIR)
+
+    @app.get("/health")
+    async def health_check():
+        tools = await mcp_server.list_tools()
+        return {
+            "status": "healthy",
+            "service": "gridmind-unified",
+            "version": "0.1.0",
+            "mcp_version": "2.1.1",
+            "active_scenario": app_service.active_scenario_id,
+            "transports": ["streamable-http", "sse"],
+            "endpoints": {
+                "dashboard": "/",
+                "streamable_http": "/mcp",
+                "sse": "/sse",
+                "messages": "/messages",
+                "health": "/health",
+            },
+            "tools": [
+                {
+                    "name": t.name,
+                    "description": t.description,
+                    "read_only": t.annotations.read_only_hint if t.annotations else None,
+                    "destructive": t.annotations.destructive_hint if t.annotations else None,
+                }
+                for t in tools
+            ],
+        }
 
     @app.get("/", response_class=HTMLResponse)
     async def index(request: Request):
@@ -669,17 +726,25 @@ def run_dashboard(
 
 
 def main() -> None:
-    """CLI entrypoint for the GridMind Command Center."""
+    """CLI entrypoint for the GridMind Command Center & Unified MCP Server."""
+    env_host = os.environ.get("HOST", "127.0.0.1")
+    env_port = int(os.environ.get("PORT", os.environ.get("DASHBOARD_PORT", "8080")))
+
     parser = argparse.ArgumentParser(
-        description="Run GridMind Command Center & Observability Dashboard"
+        description="Run GridMind Command Center Dashboard & Unified MCP Server"
     )
-    parser.add_argument("--host", type=str, default="127.0.0.1", help="Host to bind to (default: 127.0.0.1)")
-    parser.add_argument("--port", type=int, default=8080, help="Port to listen on (default: 8080)")
+    parser.add_argument("--host", type=str, default=env_host, help=f"Host to bind to (default: {env_host})")
+    parser.add_argument("--port", type=int, default=env_port, help=f"Port to listen on (default: {env_port})")
     parser.add_argument("--data-dir", type=str, default="gridmind_data/curated", help="Path to curated grid data")
     parser.add_argument("--log-level", type=str, default="info", help="Logging level")
     args = parser.parse_args()
 
-    print(f"Starting GridMind Command Center on http://{args.host}:{args.port}")
+    print(f"Starting GridMind Unified Command Center & MCP Server on http://{args.host}:{args.port}")
+    print(f"  - Web Dashboard:           http://{args.host}:{args.port}/")
+    print(f"  - Streamable HTTP MCP:     http://{args.host}:{args.port}/mcp")
+    print(f"  - SSE MCP Transport:       http://{args.host}:{args.port}/sse")
+    print(f"  - Health / Tool Discovery: http://{args.host}:{args.port}/health")
+
     run_dashboard(
         host=args.host,
         port=args.port,
