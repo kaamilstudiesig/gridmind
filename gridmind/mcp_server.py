@@ -5,12 +5,12 @@ Exposes exactly six deterministic grid simulation tools to AI agents and externa
 1. get_grid_state (read-only)
 2. get_incident_state (read-only)
 3. evaluate_action (read-only / sandboxed)
-4. execute_action (state-changing / live mutation)
+4. execute_action (state-changing / Commander authorization gated)
 5. get_last_simulation_result (read-only)
 6. load_scenario (idempotent / state reset)
 
 Architecture:
-    MCP Server -> GridMindService -> GridMindEngine
+    MCP Server (execute_action) -> GridMindCommander (approve_and_execute) -> GridMindService -> GridMindEngine
 """
 
 from __future__ import annotations
@@ -20,6 +20,8 @@ from pydantic import BaseModel, Field, field_validator
 import mcp.types as types
 from mcp.server.mcpserver import MCPServer
 
+from gridmind.audit_store import AuditStore
+from gridmind.commander import AuditRecord, AuditRecordStatus, GridMindCommander
 from gridmind.contract import ActionRequest
 from gridmind.service import GridMindService
 
@@ -224,20 +226,30 @@ IDEMPOTENT_MUTATING_ANNOTATIONS = types.ToolAnnotations(
 
 class GridMindMCPServer:
     """
-    Stateful MCP Server managing a single GridMindService instance across all tool calls.
+    Stateful MCP Server managing GridMindService and GridMindCommander instances across all tool calls.
+    Enforces that live execution passes through the Commander approval, state-revision revalidation,
+    and audit tracking gate.
     """
 
     def __init__(
         self,
         service: Optional[GridMindService] = None,
+        commander: Optional[GridMindCommander] = None,
+        audit_store: Optional[AuditStore] = None,
         data_dir: str = "gridmind_data/curated",
     ) -> None:
         self.service = service or GridMindService(data_dir=data_dir)
+        self.audit_store = audit_store or (commander.audit_store if commander else AuditStore())
+        self.commander = commander or GridMindCommander(
+            service=self.service,
+            audit_store=self.audit_store,
+        )
         self.server = MCPServer("gridmind-mcp")
         self._register_tools()
 
     def _register_tools(self) -> None:
         service = self.service
+        commander = self.commander
 
         # Tool 1: get_grid_state
         @self.server.tool(
@@ -328,10 +340,10 @@ class GridMindMCPServer:
             resp = service.evaluate_action(req)
             return resp.to_dict()
 
-        # Tool 4: execute_action
+        # Tool 4: execute_action (Commander Authorization Gated)
         @self.server.tool(
             name="execute_action",
-            description="Live execution of an approved action on the active GridState. Validates the action and mutates the live operating state. Returns structured execution response.",
+            description="Live execution of an approved action on the active GridState. Requires prior multi-specialist planning and PENDING_APPROVAL status on the current state revision. Mutates live state and returns structured execution response.",
             annotations=DESTRUCTIVE_ANNOTATIONS,
         )
         async def execute_action(
@@ -353,27 +365,30 @@ class GridMindMCPServer:
             is_valid, validated_params, err = validate_action_payload(
                 action_type, parameters
             )
+            cur_state = service.get_grid_state() if service.state else None
+            sim_res = (
+                service.state.latest_result or service.engine.solve(service.state)
+            ) if service.state else None
+
+            freq = cur_state.frequency_hz if cur_state else None
+            total_kw = cur_state.total_demand_kw if cur_state else None
+            line_loadings = (
+                {line.line_id: line.loading_pct for line in cur_state.lines}
+                if cur_state else {}
+            )
+            trans_temps = (
+                {t.transformer_id: t.temperature_c for t in cur_state.transformers}
+                if cur_state else {}
+            )
+            crit_service = (
+                dict(sim_res.critical_load_service_pct)
+                if sim_res else {}
+            )
+            cur_viols = [
+                v.to_dict() for v in (cur_state.active_violations if cur_state else [])
+            ]
+
             if not is_valid:
-                cur_state = service.get_grid_state() if service.state else None
-                sim_res = (
-                    service.state.latest_result or service.engine.solve(service.state)
-                ) if service.state else None
-
-                freq = cur_state.frequency_hz if cur_state else None
-                total_kw = cur_state.total_demand_kw if cur_state else None
-                line_loadings = (
-                    {line.line_id: line.loading_pct for line in cur_state.lines}
-                    if cur_state else {}
-                )
-                trans_temps = (
-                    {t.transformer_id: t.temperature_c for t in cur_state.transformers}
-                    if cur_state else {}
-                )
-                crit_service = (
-                    dict(sim_res.critical_load_service_pct)
-                    if sim_res else {}
-                )
-
                 return {
                     "success": False,
                     "action_applied": action_type,
@@ -396,9 +411,148 @@ class GridMindMCPServer:
                     "error_message": err,
                 }
 
-            req = ActionRequest(action_type=action_type, parameters=validated_params)
-            resp = service.execute_action(req)
-            return resp.to_dict()
+            # 1. Look up eligible PENDING_APPROVAL record for active scenario
+            active_sc = service.active_scenario_id
+            pending_dict = commander.audit_store.get_pending_for_scenario(active_sc)
+            if not pending_dict:
+                # Check if there is an orphaned/stale pending record from another scenario
+                other_pending = commander.audit_store.list(status=AuditRecordStatus.PENDING_APPROVAL.value)
+                if other_pending:
+                    stale_dict = other_pending[0]
+                    stale_rec = AuditRecord(**stale_dict)
+                    stale_rec.status = AuditRecordStatus.STALE_STATE.value
+                    commander.audit_store.save(stale_rec)
+                    current_rev = service.get_state_revision()
+                    err_msg = (
+                        f"STALE_STATE: Active scenario changed from '{stale_dict.get('scenario_id')}' to '{active_sc}' "
+                        f"and grid state changed since planning (was {stale_dict.get('state_revision')}, now {current_rev}). "
+                        f"Re-plan required."
+                    )
+                    return {
+                        "success": False,
+                        "action_applied": action_type,
+                        "is_stable": cur_state.is_stable if cur_state else False,
+                        "violations": cur_viols,
+                        "frequency_hz": freq,
+                        "total_demand_kw": total_kw,
+                        "line_loadings_pct": line_loadings,
+                        "transformer_temperatures_c": trans_temps,
+                        "critical_load_service_pct": crit_service,
+                        "summary": f"Action execution rejected: {err_msg}",
+                        "error_message": err_msg,
+                    }
+
+                err_msg = (
+                    f"APPROVAL_REQUIRED: No incident in PENDING_APPROVAL status for active scenario '{active_sc}'. "
+                    f"Commander multi-specialist planning and authorization required before live execution."
+                )
+                return {
+                    "success": False,
+                    "action_applied": action_type,
+                    "is_stable": cur_state.is_stable if cur_state else False,
+                    "violations": cur_viols,
+                    "frequency_hz": freq,
+                    "total_demand_kw": total_kw,
+                    "line_loadings_pct": line_loadings,
+                    "transformer_temperatures_c": trans_temps,
+                    "critical_load_service_pct": crit_service,
+                    "summary": f"Action execution rejected: {err_msg}",
+                    "error_message": err_msg,
+                }
+
+            # 2. Validate action_type and parameters match the recommended action
+            rec_action = pending_dict.get("recommended_action") or {}
+            rec_type = rec_action.get("action_type", "")
+            norm_req_params = _normalize_action_parameters(action_type, validated_params)
+            norm_rec_params = _normalize_action_parameters(rec_type, rec_action.get("parameters", {}))
+
+            if action_type != rec_type or norm_req_params != norm_rec_params:
+                err_msg = (
+                    f"INVALID_ACTION: Requested action '{action_type}' ({norm_req_params}) does not match "
+                    f"Commander approved recommendation '{rec_type}' ({norm_rec_params})."
+                )
+                return {
+                    "success": False,
+                    "action_applied": action_type,
+                    "is_stable": cur_state.is_stable if cur_state else False,
+                    "violations": cur_viols,
+                    "frequency_hz": freq,
+                    "total_demand_kw": total_kw,
+                    "line_loadings_pct": line_loadings,
+                    "transformer_temperatures_c": trans_temps,
+                    "critical_load_service_pct": crit_service,
+                    "summary": f"Action execution rejected: {err_msg}",
+                    "error_message": err_msg,
+                }
+
+            # 3. State-revision revalidation
+            current_revision = service.get_state_revision()
+            expected_revision = pending_dict.get("state_revision", "")
+            if current_revision != expected_revision:
+                stale_rec = AuditRecord(**pending_dict)
+                stale_rec.status = AuditRecordStatus.STALE_STATE.value
+                commander.audit_store.save(stale_rec)
+                err_msg = (
+                    f"STALE_STATE: Grid state changed since planning (was {expected_revision}, now {current_revision}). "
+                    f"Re-plan required."
+                )
+                return {
+                    "success": False,
+                    "action_applied": action_type,
+                    "is_stable": cur_state.is_stable if cur_state else False,
+                    "violations": cur_viols,
+                    "frequency_hz": freq,
+                    "total_demand_kw": total_kw,
+                    "line_loadings_pct": line_loadings,
+                    "transformer_temperatures_c": trans_temps,
+                    "critical_load_service_pct": crit_service,
+                    "summary": f"Action execution rejected: {err_msg}",
+                    "error_message": err_msg,
+                }
+
+            # 4. Delegate through Commander for atomic claim, execution, verification, and audit persistence
+            try:
+                approval_payload = {
+                    "approved": True,
+                    "approved_by": "mcp_operator_authorized",
+                    "reason": "Authorized via Commander MCP execution gate",
+                }
+                audit_rec = commander.approve_and_execute(
+                    approval=approval_payload,
+                    incident_id=pending_dict["incident_id"],
+                )
+                exec_data = audit_rec.execution
+                resp_dict = exec_data.get("response") or {}
+                if not resp_dict:
+                    post_state = service.get_grid_state()
+                    resp_dict = {
+                        "success": audit_rec.status == AuditRecordStatus.VERIFIED.value,
+                        "action_applied": action_type,
+                        "is_stable": post_state.is_stable,
+                        "violations": [v.to_dict() for v in post_state.active_violations],
+                        "frequency_hz": post_state.frequency_hz,
+                        "total_demand_kw": post_state.total_demand_kw,
+                        "line_loadings_pct": {l.line_id: l.loading_pct for l in post_state.lines},
+                        "transformer_temperatures_c": {t.transformer_id: t.temperature_c for t in post_state.transformers},
+                        "critical_load_service_pct": dict(service.state.latest_result.critical_load_service_pct) if service.state.latest_result else {},
+                        "summary": f"Action execution {audit_rec.status}",
+                        "error_message": None,
+                    }
+                return resp_dict
+            except ValueError as val_err:
+                return {
+                    "success": False,
+                    "action_applied": action_type,
+                    "is_stable": cur_state.is_stable if cur_state else False,
+                    "violations": cur_viols,
+                    "frequency_hz": freq,
+                    "total_demand_kw": total_kw,
+                    "line_loadings_pct": line_loadings,
+                    "transformer_temperatures_c": trans_temps,
+                    "critical_load_service_pct": crit_service,
+                    "summary": f"Action execution rejected: {str(val_err)}",
+                    "error_message": str(val_err),
+                }
 
         # Tool 5: get_last_simulation_result
         @self.server.tool(
@@ -440,10 +594,17 @@ class GridMindMCPServer:
 
 def create_mcp_server(
     service: Optional[GridMindService] = None,
+    commander: Optional[GridMindCommander] = None,
+    audit_store: Optional[AuditStore] = None,
     data_dir: str = "gridmind_data/curated",
 ) -> MCPServer:
     """Factory creating and returning an MCPServer instance configured with GridMind tools."""
-    wrapper = GridMindMCPServer(service=service, data_dir=data_dir)
+    wrapper = GridMindMCPServer(
+        service=service,
+        commander=commander,
+        audit_store=audit_store,
+        data_dir=data_dir,
+    )
     return wrapper.server
 
 

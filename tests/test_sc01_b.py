@@ -212,6 +212,7 @@ class TestScenarioSC01BMCP(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(eval_res["critical_load_service_pct"]["LZ04"], 100.0)
 
         # 3. Live execute load_transfer over MCP
+        self.mcp_wrapper.commander.plan_incident_response()
         exec_res = await self._call_tool_json(
             "execute_action",
             {
