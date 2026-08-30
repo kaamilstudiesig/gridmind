@@ -653,7 +653,7 @@ class TestDashboard(unittest.TestCase):
         data = health_resp.json()
         self.assertEqual(data["status"], "healthy")
         self.assertEqual(data["service"], "gridmind-unified")
-        self.assertEqual(len(data["tools"]), 6)
+        self.assertEqual(len(data["tools"]), 7)
 
         # 2. Loading scenario via dashboard updates the underlying shared service
         self.client.post("/api/scenario/load", json={"scenario_id": "SC01-B"}, headers=OPERATOR_AUTH)
@@ -663,6 +663,191 @@ class TestDashboard(unittest.TestCase):
         health_after = self.client.get("/health").json()
         self.assertEqual(health_after["active_scenario"], "SC01-B")
 
+    def test_39_api_diagnostics_endpoint_returns_verified_status(self) -> None:
+        """Tests that /api/diagnostics returns verified real system connectivity and tool counts when authenticated."""
+        resp = self.client.get("/api/diagnostics", headers=VIEWER_AUTH)
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["status"], "healthy")
+        self.assertEqual(data["service"], "gridmind-unified")
+        self.assertIn("mcp", data)
+        self.assertEqual(data["mcp"]["tools_count"], 7)
+        self.assertIn("commander", data)
+        self.assertTrue(data["commander"]["shared_service"])
+        self.assertIn("audit_store", data)
+        self.assertEqual(data["audit_store"]["status"], "connected")
+        self.assertEqual(data["audit_store"]["storage_type"], "sqlite_wal")
+
+    def test_40_idle_state_clears_all_incident_data_on_sc02_to_base(self) -> None:
+        """Finding 1 (Idle State): Switching SC02 -> BASE provides a clean nominal state with 0 violations and latest_record=None."""
+        # 1. Load SC02 and create plan
+        self.client.post("/api/scenario/load", json={"scenario_id": "SC02"}, headers=OPERATOR_AUTH)
+        plan_resp = self.client.post("/api/commander/plan", headers=OPERATOR_AUTH)
+        self.assertEqual(plan_resp.status_code, 200)
+
+        # Verify status shows active incident
+        st_sc02 = self.client.get("/api/status").json()
+        self.assertEqual(st_sc02["scenario_id"], "SC02")
+        self.assertIsNotNone(st_sc02["latest_record"])
+        self.assertGreater(len(st_sc02["incident_state"]["active_violations"]), 0)
+
+        # 2. Switch to BASE
+        self.client.post("/api/scenario/load", json={"scenario_id": "BASE"}, headers=OPERATOR_AUTH)
+        st_base = self.client.get("/api/status").json()
+        self.assertEqual(st_base["scenario_id"], "BASE")
+        # In BASE with no active plan, latest_record is None and active_violations is 0
+        self.assertIsNone(st_base["latest_record"])
+        self.assertEqual(len(st_base["incident_state"]["active_violations"]), 0)
+        self.assertEqual(len(st_base["incident_state"]["overheated_transformers"]), 0)
+
+    def test_41_safety_evidence_identifies_true_peak_transformer_temperature(self) -> None:
+        """Finding 2 (Peak Temp): Safety evidence identifies true maximum peak transformer across all assets."""
+        self.service.load_scenario("SC02")
+        plan = self.commander.plan_incident_response()
+        safety_spec = plan.specialist_results["safety"]
+        evidence = safety_spec.evidence
+
+        # 1. Check isolate_transformer candidate: shifts load to T05 causing T05 to hit ~295°C while T01 is 28°C
+        iso_ev = next((e for e in evidence if e["action"]["action_type"] == "isolate_transformer"), None)
+        self.assertIsNotNone(iso_ev)
+        self.assertEqual(iso_ev["predicted_peak_transformer"], "T05")
+        self.assertGreater(iso_ev["predicted_peak_temp"], 200.0)
+        self.assertGreater(iso_ev["predicted_peak_temp"], iso_ev["predicted_temp_t01"])
+
+        # 2. Check load_restriction candidate: T04 at ~95.7°C is hotter than T01 at ~94.1°C
+        restr_ev = next((e for e in evidence if e["action"]["action_type"] == "load_restriction"), None)
+        self.assertIsNotNone(restr_ev)
+        self.assertEqual(restr_ev["predicted_peak_transformer"], "T04")
+        self.assertGreater(restr_ev["predicted_peak_temp"], restr_ev["predicted_temp_t01"])
+
+    def test_42_non_thermal_and_missing_telemetry_incidents_never_fabricate_t01(self) -> None:
+        """Finding 3 (Anti-Fabrication): Non-thermal or missing telemetry incidents never fabricate T01/116.63°C."""
+        # Baseline with zero overheated transformers
+        self.service.load_scenario("BASE")
+        inc_base = self.service.get_incident_state()
+        self.assertEqual(len(inc_base.overheated_transformers), 0)
+        self.assertEqual(len(inc_base.active_violations), 0)
+
+        # Scenario with damaged tie-line (SC01)
+        self.service.load_scenario("SC01")
+        inc_sc01 = self.service.get_incident_state()
+        # SC01 has tripped lines and T01 overheat; verify that tripped lines contains L08
+        self.assertIn("L08", inc_sc01.tripped_lines)
+
+    def test_43_historical_incident_records_preserve_pre_action_violations(self) -> None:
+        """Finding 4 (Historical Integrity): Historical AuditRecord preserves original pre-action violations after resolution."""
+        self.service.load_scenario("SC02")
+        plan = self.commander.plan_incident_response()
+        inc_id = plan.incident_id
+
+        # Execute and verify
+        approved_rec = self.commander.approve_and_execute(
+            approval={"approved": True, "approved_by": "operator_alice", "reason": "Approved"},
+            incident_id=inc_id,
+        )
+        self.assertEqual(approved_rec.status, "VERIFIED")
+
+        # Fetch from API
+        resp = self.client.get(f"/api/audit/records/{inc_id}")
+        self.assertEqual(resp.status_code, 200)
+        rec_data = resp.json()
+
+        # Assert pre_state_evidence preserves pre-action violations and stability
+        self.assertTrue(len(rec_data["pre_state_evidence"]) > 0)
+        pre_ev = rec_data["pre_state_evidence"][0]
+        self.assertFalse(pre_ev["is_stable"])
+        self.assertIn("T01", pre_ev["overheated_transformers"])
+        self.assertTrue(len(pre_ev["active_violations"]) > 0)
+
+    def test_44_n07_is_not_labeled_overheated_purely_from_sc02_scenario(self) -> None:
+        """Finding 5 (Topology): SC02 incident state only reports T01 as overheated, never N07."""
+        self.service.load_scenario("SC02")
+        inc = self.service.get_incident_state()
+        self.assertEqual(inc.overheated_transformers, ["T01"])
+        self.assertNotIn("N07", inc.overheated_transformers)
+
+    def test_45_diagnostics_endpoint_security_and_no_path_leak(self) -> None:
+        """Finding 6 (Security): /api/diagnostics requires authentication and does not leak filesystem paths."""
+        # Unauthenticated fails 401
+        unauth_resp = self.client.get("/api/diagnostics")
+        self.assertEqual(unauth_resp.status_code, 401)
+
+        # Authenticated succeeds
+        auth_resp = self.client.get("/api/diagnostics", headers=VIEWER_AUTH)
+        self.assertEqual(auth_resp.status_code, 200)
+        data = auth_resp.json()
+
+        # Assert no db_path, no filesystem absolute paths
+        self.assertNotIn("db_path", data.get("audit_store", {}))
+        resp_text = auth_resp.text
+        self.assertNotIn("/home/", resp_text)
+        self.assertNotIn("/tmp/", resp_text)
+        self.assertNotIn("gm-lead-token-secret", resp_text)
+
+    def test_46_mcp_diagnostics_reflects_mount_mcp_setting(self) -> None:
+        """Finding 7 (Real MCP Status): /api/diagnostics correctly reports status when mount_mcp is True vs False."""
+        # App with mount_mcp=True (default in setUp)
+        resp_true = self.client.get("/api/diagnostics", headers=VIEWER_AUTH)
+        self.assertEqual(resp_true.json()["mcp"]["status"], "online")
+        self.assertEqual(resp_true.json()["mcp"]["tools_count"], 7)
+
+        # App with mount_mcp=False
+        app_unmounted = create_dashboard_app(
+            service=self.service,
+            audit_store=self.audit_store,
+            commander=self.commander,
+            mount_mcp=False,
+        )
+        client_unmounted = TestClient(app_unmounted)
+        resp_false = client_unmounted.get("/api/diagnostics", headers=VIEWER_AUTH)
+        self.assertEqual(resp_false.status_code, 200)
+        self.assertEqual(resp_false.json()["mcp"]["status"], "not_mounted")
+        self.assertEqual(resp_false.json()["mcp"]["tools_count"], 0)
+        self.assertEqual(resp_false.json()["mcp"]["transports"], [])
+
+    def test_47_no_privileged_bearer_tokens_in_html_or_js_assets(self) -> None:
+        """Finding 8 (Security): Bearer tokens are strictly absent from index.html and dashboard.js."""
+        html_resp = self.client.get("/")
+        self.assertEqual(html_resp.status_code, 200)
+        self.assertNotIn("gm-lead-token-secret", html_resp.text)
+        self.assertNotIn("gm-operator-token-secret", html_resp.text)
+        self.assertNotIn("gm-viewer-token-secret", html_resp.text)
+
+        js_resp = self.client.get("/static/js/dashboard.js")
+        self.assertEqual(js_resp.status_code, 200)
+        self.assertNotIn("gm-lead-token-secret", js_resp.text)
+        self.assertNotIn("gm-operator-token-secret", js_resp.text)
+        self.assertNotIn("gm-viewer-token-secret", js_resp.text)
+
+    def test_48_sandbox_hospital_service_reflects_actual_evaluation(self) -> None:
+        """Finding 9 (Hospital Service): Sandbox candidate evidence captures real hospital service percentage."""
+        self.service.load_scenario("SC02")
+        plan = self.commander.plan_incident_response()
+        evidence = plan.specialist_results["safety"].evidence
+        for ev in evidence:
+            self.assertIn("critical_hospital_service_pct", ev)
+            self.assertEqual(ev["critical_hospital_service_pct"], 100.0)
+
+    def test_49_verification_payload_uses_authoritative_post_action_data(self) -> None:
+        """Finding 10 (Verification Integrity): Verification dictionary records authoritative post-action measurements."""
+        self.service.load_scenario("SC02")
+        plan = self.commander.plan_incident_response()
+        rec = self.commander.approve_and_execute(
+            approval={"approved": True, "approved_by": "operator_alice", "reason": "Emergency cooling"},
+            incident_id=plan.incident_id,
+        )
+        self.assertEqual(rec.status, "VERIFIED")
+        verif = rec.verification
+        self.assertTrue(verif["verified"])
+        self.assertTrue(verif["post_state_stable"])
+        self.assertIsInstance(verif["post_frequency_hz"], float)
+        self.assertEqual(verif["remaining_violations_count"], 0)
+        self.assertEqual(verif["critical_hospital_service_pct"], 100.0)
+        self.assertIn("T01", verif["transformer_temperatures"])
+        self.assertLess(verif["max_transformer_temperature_c"], 110.0)
+
 
 if __name__ == "__main__":
     unittest.main()
+
+

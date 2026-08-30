@@ -521,6 +521,8 @@ class GridMindCommander:
         # 2. Immediately inspect post-action live grid state
         post_grid = self.service.get_grid_state()
         post_violations = [v.description for v in post_grid.active_violations]
+        hosp_lz = next((lz for lz in post_grid.load_zones if lz.load_id == "LZ04"), None)
+        hosp_service_pct = round(100.0 - float(hosp_lz.curtailment_pct), 1) if hosp_lz else 100.0
 
         # 3. Verification Criteria:
         # - Execution succeeded
@@ -536,7 +538,11 @@ class GridMindCommander:
             "verified": is_verified,
             "post_state_stable": post_grid.is_stable,
             "post_frequency_hz": post_grid.frequency_hz,
+            "critical_hospital_service_pct": hosp_service_pct,
+            "remaining_violations_count": len(post_violations),
             "active_violations": post_violations,
+            "transformer_temperatures": {t.transformer_id: t.temperature_c for t in post_grid.transformers},
+            "max_transformer_temperature_c": max((t.temperature_c for t in post_grid.transformers), default=None),
         }
         record.status = (
             AuditRecordStatus.VERIFIED.value if is_verified else AuditRecordStatus.EXECUTED_UNVERIFIED.value
