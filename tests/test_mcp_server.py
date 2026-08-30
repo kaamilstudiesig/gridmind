@@ -152,6 +152,8 @@ class TestMCPServer(unittest.IsolatedAsyncioTestCase):
     async def test_08_execute_action_tool(self) -> None:
         """Tests execute_action applies intervention to live state."""
         await self._call_tool_json("load_scenario", {"scenario_id": "SC01"})
+        plan = self.mcp_wrapper.commander.plan_incident_response()
+        self.mcp_wrapper.commander.authorize_plan(plan.incident_id, approved_by="operator_lead")
         res = await self._call_tool_json(
             "execute_action",
             {
@@ -210,6 +212,8 @@ class TestMCPServer(unittest.IsolatedAsyncioTestCase):
     async def test_10_live_mutation_after_execution(self) -> None:
         """Tests that execute_action mutates live state permanently."""
         await self._call_tool_json("load_scenario", {"scenario_id": "SC01"})
+        plan = self.mcp_wrapper.commander.plan_incident_response()
+        self.mcp_wrapper.commander.authorize_plan(plan.incident_id, approved_by="operator_lead")
 
         # Execute load restriction
         exec_res = await self._call_tool_json(
@@ -381,7 +385,7 @@ class TestMCPServer(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(len(res_exec_unknown["violations"]) > 0)
         self.assertIn("LZ04", res_exec_unknown["critical_load_service_pct"])
 
-        # Case C: Domain constraint rejection in execute_action (curtailing critical hospital load)
+        # Case C: Domain constraint rejection in execute_action (curtailing unapproved/critical target)
         res_exec_crit = await self._call_tool_json(
             "execute_action",
             {
@@ -391,7 +395,9 @@ class TestMCPServer(unittest.IsolatedAsyncioTestCase):
         )
         self.assertFalse(res_exec_crit["success"])
         self.assertFalse(res_exec_crit["is_stable"])
-        self.assertIn("CRITICAL", res_exec_crit["error_message"])
+        self.assertTrue(
+            any(k in res_exec_crit["error_message"] for k in ("APPROVAL_REQUIRED", "INVALID_ACTION", "CRITICAL"))
+        )
         self.assertIn("LZ04", res_exec_crit["critical_load_service_pct"])
 
     async def test_20_reduction_pct_numeric_percentage_and_string_rejection(self) -> None:

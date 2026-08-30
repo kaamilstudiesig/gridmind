@@ -29,11 +29,17 @@ from starlette.applications import Starlette
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
+from gridmind.audit_store import AuditStore
+from gridmind.commander import GridMindCommander
 from gridmind.mcp_server import GridMindMCPServer
+from gridmind.service import GridMindService
 
 
 def create_http_app(
     wrapper: Optional[GridMindMCPServer] = None,
+    service: Optional[GridMindService] = None,
+    commander: Optional[GridMindCommander] = None,
+    audit_store: Optional[AuditStore] = None,
     data_dir: str = "gridmind_data/curated",
     streamable_path: str = "/mcp",
     sse_path: str = "/sse",
@@ -43,7 +49,12 @@ def create_http_app(
     Creates and returns a Starlette ASGI application that hosts both Streamable HTTP
     and SSE transports for GridMind MCP, using a single shared GridMindService instance.
     """
-    mcp_wrapper = wrapper or GridMindMCPServer(data_dir=data_dir)
+    mcp_wrapper = wrapper or GridMindMCPServer(
+        service=service,
+        commander=commander,
+        audit_store=audit_store,
+        data_dir=data_dir,
+    )
     server = mcp_wrapper.server
 
     streamable_app = server.streamable_http_app(streamable_http_path=streamable_path)

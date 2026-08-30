@@ -192,6 +192,8 @@ class TestMCPServerHTTP(unittest.IsolatedAsyncioTestCase):
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 await session.call_tool("load_scenario", {"scenario_id": "SC01"})
+                plan = self.wrapper.commander.plan_incident_response()
+                self.wrapper.commander.authorize_plan(plan.incident_id, approved_by="operator_lead")
 
                 # Execute load restriction
                 exec_res = await session.call_tool(

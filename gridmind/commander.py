@@ -341,6 +341,57 @@ class GridMindCommander:
             audit_record=record,
         )
 
+    def authorize_plan(
+        self,
+        incident_id: str,
+        approved_by: str,
+        reason: Optional[str] = None,
+    ) -> AuditRecord:
+        """
+        Internal control-plane method to record authentic human operator authorization in the AuditStore.
+
+        SECURITY BOUNDARY:
+        - MUST ONLY be invoked by authenticated human authorization layers (e.g., Dashboard with
+          require_role('operator_lead') or authenticated control-room sessions).
+        - MUST NEVER be exposed directly to untrusted MCP transport tools or AI agent calls.
+        - Rejects blank, whitespace, or synthetic identity strings (e.g. 'mcp_operator_authorized').
+        - Validates that the incident has not become stale before recording authorization.
+        """
+        clean_user = str(approved_by).strip() if approved_by else ""
+        if not clean_user:
+            raise ValueError("approved_by cannot be empty or whitespace.")
+        if clean_user == "mcp_operator_authorized":
+            raise ValueError("Synthetic approval identity 'mcp_operator_authorized' is forbidden.")
+
+        raw_rec = self.audit_store.get(incident_id)
+        if not raw_rec:
+            raise ValueError(f"No AuditRecord found for incident_id '{incident_id}'")
+        record = AuditRecord(**raw_rec)
+        if record.status != AuditRecordStatus.PENDING_APPROVAL.value:
+            raise ValueError(
+                f"Cannot authorize record with status '{record.status}'; expected '{AuditRecordStatus.PENDING_APPROVAL.value}'"
+            )
+
+        # Invalidate if state changed since planning
+        current_rev = self.service.get_state_revision()
+        if current_rev != record.state_revision:
+            record.status = AuditRecordStatus.STALE_STATE.value
+            self.audit_store.save(record)
+            raise ValueError(
+                f"Cannot authorize incident '{incident_id}': Grid state changed since planning "
+                f"(was {record.state_revision}, now {current_rev}). Re-planning required."
+            )
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        record.approval = {
+            "approved": True,
+            "approved_by": clean_user,
+            "reason": reason or "Authorized by control room operator",
+            "timestamp": now_iso,
+        }
+        self.audit_store.save(record)
+        return record
+
     def approve_and_execute(
         self,
         approval: dict[str, Any],
