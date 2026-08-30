@@ -16,6 +16,7 @@ Architecture:
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Optional
 from pydantic import BaseModel, Field, field_validator
 import mcp.types as types
@@ -676,6 +677,8 @@ class GridMindMCPServer:
                         "status": "LOAD_ERROR",
                         "recommended_action": None,
                     }
+                # Invalidate stale records: this is a fast SQLite UPDATE and
+                # does not need to be offloaded to a worker thread.
                 commander.audit_store.invalidate_stale_pending_records(
                     active_scenario_id=service.active_scenario_id,
                     current_state_revision=service.get_state_revision(),
@@ -685,7 +688,14 @@ class GridMindMCPServer:
             # The Commander always generates a fresh UUID-based INC-* identifier
             # or returns an existing idempotent PENDING_APPROVAL record.
             # This prevents callers from injecting synthetic identifiers.
-            plan_res = commander.plan_incident_response()
+            #
+            # Performance: commander.plan_incident_response() is fully synchronous.
+            # It calls three specialist LLM HTTP calls (each with up to 12 s timeout
+            # × 2 retries), which can block the event loop for up to 72 seconds in
+            # the worst case.  We offload the entire planning workflow to the
+            # default ThreadPoolExecutor so the event loop remains free to serve
+            # other MCP tools and health requests concurrently.
+            plan_res = await asyncio.to_thread(commander.plan_incident_response)
             res_dict = plan_res.to_dict()
 
             if plan_res.status == AuditRecordStatus.PENDING_APPROVAL.value:

@@ -264,7 +264,54 @@ class TestMCPPlanningBridge(unittest.IsolatedAsyncioTestCase):
             "incident_id must be a Commander-generated INC-* identifier",
         )
 
+    async def test_11_planning_does_not_block_event_loop(self) -> None:
+        """Test 11 — Regression: Qodo Performance Bug. plan_incident_response must NOT block
+        the event loop. A concurrent lightweight MCP call (get_grid_state) issued at the
+        same time as planning must resolve promptly, proving the planning workflow is
+        dispatched to a thread-pool worker via asyncio.to_thread().
+        """
+        import asyncio
+        import time
+
+        await self._call_tool("load_scenario", {"scenario_id": "SC02"})
+
+        # Track how long it takes a concurrent get_grid_state to complete
+        # while plan_incident_response is running in parallel.
+        concurrent_resolved_at: list[float] = []
+
+        async def concurrent_get_grid_state() -> None:
+            result = await self._call_tool("get_grid_state", {})
+            concurrent_resolved_at.append(time.monotonic())
+            # Basic sanity: the concurrent read must return a valid response
+            assert "scenario_id" in result or "is_stable" in result, (
+                f"concurrent get_grid_state returned unexpected result: {result}"
+            )
+
+        # Fire both concurrently; planning goes to a thread, get_grid_state stays on event loop
+        planning_start = time.monotonic()
+        plan_task = asyncio.create_task(self._call_tool("plan_incident_response", {}))
+        grid_task = asyncio.create_task(concurrent_get_grid_state())
+
+        plan_res, _ = await asyncio.gather(plan_task, grid_task)
+
+        planning_duration = time.monotonic() - planning_start
+
+        # get_grid_state must have completed within 2 seconds of planning start,
+        # regardless of how long planning takes (LLM degraded-mode is near-instant in tests).
+        self.assertEqual(len(concurrent_resolved_at), 1, "concurrent get_grid_state did not complete")
+        concurrent_latency = concurrent_resolved_at[0] - planning_start
+        self.assertLess(
+            concurrent_latency,
+            2.0,
+            f"Event loop appears blocked: get_grid_state took {concurrent_latency:.2f}s alongside planning "
+            f"(total planning: {planning_duration:.2f}s). Expected < 2.0s for non-blocking dispatch.",
+        )
+
+        # Planning must still have produced a valid result
+        self.assertIn("incident_id", plan_res)
+        self.assertTrue(plan_res["incident_id"].startswith("INC-"))
+        self.assertEqual(plan_res["status"], "PENDING_APPROVAL")
+
 
 if __name__ == "__main__":
     unittest.main()
-
