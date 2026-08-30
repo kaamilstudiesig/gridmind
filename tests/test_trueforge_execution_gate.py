@@ -419,6 +419,91 @@ class TestTrueForgeExecutionGate(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(store.get("INC-VALID-CURRENT")["status"], AuditRecordStatus.PENDING_APPROVAL.value)
         self.assertEqual(store.count(status="PENDING_APPROVAL"), 1)
 
+    async def test_14_unauthenticated_mcp_client_cannot_manufacture_approval_by_any_path(self) -> None:
+        """Security: Unauthenticated/raw MCP client attempting to manufacture approval fails closed."""
+        await self._call_tool("load_scenario", {"scenario_id": "SC02"})
+        plan = self.commander.plan_incident_response()
+        self.assertEqual(plan.status, AuditRecordStatus.PENDING_APPROVAL.value)
+
+        # Attempt 1: Raw MCP call with manufactured approved keys
+        res1 = await self._call_tool(
+            "execute_action",
+            {
+                "action_type": "load_restriction",
+                "parameters": {
+                    "target": "N07",
+                    "reduction_pct": 15.0,
+                    "approved": True,
+                    "approved_by": "attacker",
+                    "authorization": "Bearer fake_token",
+                },
+            },
+        )
+        self.assertFalse(res1["success"])
+        self.assertIn("APPROVAL_REQUIRED", res1["error_message"])
+
+        # Verify AuditRecord was NOT authorized and NOT executed
+        rec = self.audit_store.get(plan.incident_id)
+        self.assertEqual(rec["status"], AuditRecordStatus.PENDING_APPROVAL.value)
+        self.assertFalse(rec.get("approval", {}).get("approved", False))
+        self.assertIsNone(rec.get("approval", {}).get("approved_by"))
+
+        # Verify live grid state remains unmutated
+        grid_state = await self._call_tool("get_grid_state", {})
+        self.assertFalse(grid_state["is_stable"])
+
+    def test_15_dashboard_authenticated_operator_identity_reaches_audit_record(self) -> None:
+        """Security: Dashboard authenticated operator's actual identity is strictly derived and reaches AuditRecord."""
+        from fastapi.testclient import TestClient
+        from dashboard.app import create_dashboard_app
+
+        app = create_dashboard_app(
+            service=self.service,
+            commander=self.commander,
+            audit_store=self.audit_store,
+        )
+        client = TestClient(app)
+
+        # 1. Unauthenticated request to /api/commander/approve fails with 401
+        res_unauth = client.post("/api/commander/approve", json={"reason": "unauthorized attempt"})
+        self.assertEqual(res_unauth.status_code, 401)
+
+        # 2. Viewer role cannot approve (403 Forbidden)
+        res_viewer = client.post(
+            "/api/commander/approve",
+            json={"reason": "viewer attempt"},
+            headers={"Authorization": "Bearer gm-viewer-token-secret"},
+        )
+        self.assertEqual(res_viewer.status_code, 403)
+
+        # 3. Load SC01 and trigger plan as operator
+        load_res = client.post(
+            "/api/scenario/load",
+            json={"scenario_id": "SC01"},
+            headers={"Authorization": "Bearer gm-operator-token-secret"},
+        )
+        self.assertEqual(load_res.status_code, 200)
+        plan_res = client.post(
+            "/api/commander/plan",
+            headers={"Authorization": "Bearer gm-operator-token-secret"},
+        )
+        self.assertEqual(plan_res.status_code, 200)
+        inc_id = plan_res.json()["incident_id"]
+
+        # 4. Authenticated operator_lead approves
+        appr_res = client.post(
+            "/api/commander/approve",
+            json={"incident_id": inc_id, "reason": "Authorized by Alice"},
+            headers={"Authorization": "Bearer gm-lead-token-secret"},
+        )
+        self.assertEqual(appr_res.status_code, 200)
+
+        # 5. Assert AuditRecord contains the real authenticated operator username
+        saved_rec = self.audit_store.get(inc_id)
+        self.assertEqual(saved_rec["status"], AuditRecordStatus.VERIFIED.value)
+        self.assertEqual(saved_rec["approval"]["approved_by"], "operator_alice")
+        self.assertNotEqual(saved_rec["approval"]["approved_by"], "mcp_operator_authorized")
+
 
 if __name__ == "__main__":
     unittest.main()

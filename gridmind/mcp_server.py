@@ -457,10 +457,20 @@ class GridMindMCPServer:
             # 2. Look up eligible PENDING_APPROVAL record for active scenario
             pending_dict = commander.audit_store.get_pending_for_scenario(active_sc)
             if not pending_dict:
-                err_msg = (
-                    f"APPROVAL_REQUIRED: No incident in PENDING_APPROVAL status for active scenario '{active_sc}'. "
-                    f"Commander multi-specialist planning and explicit human operator authorization required before live execution."
-                )
+                latest_rec = commander.audit_store.get_latest()
+                if latest_rec and latest_rec.get("status") == AuditRecordStatus.STALE_STATE.value:
+                    stale_sc = latest_rec.get("scenario_id")
+                    stale_rev = latest_rec.get("state_revision")
+                    err_msg = (
+                        f"STALE_STATE: Previous incident plan '{latest_rec.get('incident_id')}' (scenario '{stale_sc}', revision {stale_rev}) "
+                        f"is in STALE_STATE because active scenario is now '{active_sc}' (revision {current_rev}). "
+                        f"Re-planning and explicit human operator authorization required for active scenario '{active_sc}' before live execution."
+                    )
+                else:
+                    err_msg = (
+                        f"APPROVAL_REQUIRED: No incident in PENDING_APPROVAL status for active scenario '{active_sc}'. "
+                        f"Commander multi-specialist planning and explicit human operator authorization required before live execution."
+                    )
                 return {
                     "success": False,
                     "action_applied": action_type,
