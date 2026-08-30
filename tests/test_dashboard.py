@@ -32,7 +32,7 @@ class TestDashboard(unittest.TestCase):
     """Test suite for GridMind Dashboard API, event extraction, and safety guarantees."""
 
     def setUp(self) -> None:
-        self.tmp_dir = tempfile.TemporaryDirectory()
+        self.tmp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.db_path = os.path.join(self.tmp_dir.name, "test_dash_audit.db")
         self.audit_store = AuditStore(db_path=self.db_path)
         self.service = GridMindService(data_dir="gridmind_data/curated")

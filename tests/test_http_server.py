@@ -99,7 +99,7 @@ class TestMCPServerHTTP(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(data["service"], "gridmind-mcp")
             self.assertIn("streamable-http", data["transports"])
             self.assertIn("sse", data["transports"])
-            self.assertEqual(len(data["tools"]), 6)
+            self.assertEqual(len(data["tools"]), 7)
 
             # Test root endpoint /
             res_root = await client.get(f"{self.base_url}/")
@@ -113,13 +113,14 @@ class TestMCPServerHTTP(unittest.IsolatedAsyncioTestCase):
                 await session.initialize()
                 tools_resp = await session.list_tools()
                 tool_names = [t.name for t in tools_resp.tools]
-                self.assertEqual(len(tool_names), 6)
+                self.assertEqual(len(tool_names), 7)
                 self.assertIn("get_grid_state", tool_names)
                 self.assertIn("get_incident_state", tool_names)
                 self.assertIn("evaluate_action", tool_names)
                 self.assertIn("execute_action", tool_names)
                 self.assertIn("get_last_simulation_result", tool_names)
                 self.assertIn("load_scenario", tool_names)
+                self.assertIn("plan_incident_response", tool_names)
 
     async def test_03_streamable_http_read_only_tools(self) -> None:
         """Tests invoking read-only tools over Streamable HTTP."""
@@ -243,7 +244,7 @@ class TestMCPServerHTTP(unittest.IsolatedAsyncioTestCase):
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 tools_resp = await session.list_tools()
-                self.assertEqual(len(tools_resp.tools), 6)
+                self.assertEqual(len(tools_resp.tools), 7)
 
                 res = await session.call_tool("get_grid_state", {})
                 self.assertFalse(res.is_error)

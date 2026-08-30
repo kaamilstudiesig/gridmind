@@ -50,8 +50,8 @@ class TestMCPServer(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(len(result.content) > 0)
         return json.loads(result.content[0].text)
 
-    async def test_01_all_six_tools_discoverable(self) -> None:
-        """Tests that exactly the six required tools are registered and discoverable."""
+    async def test_01_all_seven_tools_discoverable(self) -> None:
+        """Tests that exactly the seven required tools are registered and discoverable."""
         tools = await self.server.list_tools()
         tool_names = [t.name for t in tools]
         expected_tools = [
@@ -61,8 +61,9 @@ class TestMCPServer(unittest.IsolatedAsyncioTestCase):
             "execute_action",
             "get_last_simulation_result",
             "load_scenario",
+            "plan_incident_response",
         ]
-        self.assertEqual(len(tools), 6)
+        self.assertEqual(len(tools), 7)
         self.assertEqual(sorted(tool_names), sorted(expected_tools))
 
     async def test_02_correct_tool_names_and_descriptions(self) -> None:
@@ -98,12 +99,13 @@ class TestMCPServer(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(exec_ann.destructive_hint)
         self.assertFalse(exec_ann.idempotent_hint)
 
-        # Idempotent mutating tool (load_scenario)
-        load_ann = tools_by_name["load_scenario"].annotations
-        self.assertIsNotNone(load_ann)
-        self.assertFalse(load_ann.read_only_hint)
-        self.assertFalse(load_ann.destructive_hint)
-        self.assertTrue(load_ann.idempotent_hint)
+        # Idempotent mutating tools (load_scenario, plan_incident_response)
+        for name in ["load_scenario", "plan_incident_response"]:
+            mut_ann = tools_by_name[name].annotations
+            self.assertIsNotNone(mut_ann, f"Missing annotations on {name}")
+            self.assertFalse(mut_ann.read_only_hint)
+            self.assertFalse(mut_ann.destructive_hint)
+            self.assertTrue(mut_ann.idempotent_hint)
 
     async def test_04_get_grid_state_tool(self) -> None:
         """Tests get_grid_state tool returns valid structured grid state."""
@@ -337,7 +339,7 @@ class TestMCPServer(unittest.IsolatedAsyncioTestCase):
 
                 # List tools over stdio
                 tools_resp = await session.list_tools()
-                self.assertEqual(len(tools_resp.tools), 6)
+                self.assertEqual(len(tools_resp.tools), 7)
 
                 # Call get_grid_state over stdio
                 res = await session.call_tool("get_grid_state", {})
