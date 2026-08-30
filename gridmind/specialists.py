@@ -44,11 +44,93 @@ class SpecialistResult:
         return asdict(self)
 
 
+def _resolve_transformer_topology(
+    grid_state: Optional[GridStateResponse],
+    transformer_id: str,
+    tripped_lines: set[str],
+) -> Optional[dict[str, Any]]:
+    """
+    Traverses live GridStateResponse DTOs to resolve:
+    - transformer node (feeder bus)
+    - connected downstream non-critical curtailable load zone node
+    - available healthy tie-line route(s)
+
+    Returns None if topology is missing, incomplete, or unresolvable.
+    """
+    if not grid_state or not grid_state.transformers:
+        return None
+
+    # 1. Locate transformer DTO to find its feeder bus
+    xfmr = next((t for t in grid_state.transformers if t.transformer_id == transformer_id), None)
+    if not xfmr or not xfmr.node_id:
+        return None
+
+    feeder_node = xfmr.node_id
+
+    # 2. Locate downstream non-critical load zone connected to feeder_node
+    lz_by_node: dict[str, Any] = {lz.node_id: lz for lz in (grid_state.load_zones or [])}
+
+    curtailable_load_node: Optional[str] = None
+    for line in (grid_state.lines or []):
+        if line.is_tie_line:
+            continue
+        target_node = None
+        if line.from_node == feeder_node:
+            target_node = line.to_node
+        elif line.to_node == feeder_node:
+            target_node = line.from_node
+
+        if target_node and target_node in lz_by_node:
+            lz = lz_by_node[target_node]
+            if str(lz.priority).lower() != "critical":
+                curtailable_load_node = target_node
+                break
+
+    # Fallback to feeder_node itself if it contains a non-critical load zone directly
+    if not curtailable_load_node and feeder_node in lz_by_node:
+        lz = lz_by_node[feeder_node]
+        if str(lz.priority).lower() != "critical":
+            curtailable_load_node = feeder_node
+
+    if not curtailable_load_node:
+        return None
+
+    # 3. Locate available healthy tie-line route(s) from feeder_node
+    tie_transfer: Optional[dict[str, Any]] = None
+    for line in (grid_state.lines or []):
+        if not line.is_tie_line:
+            continue
+        if line.from_node == feeder_node or line.to_node == feeder_node:
+            dest_node = line.to_node if line.from_node == feeder_node else line.from_node
+            status_str = str(line.status).lower()
+            is_unavailable = (
+                status_str in ("tripped", "isolated")
+                or line.line_id in tripped_lines
+            )
+            if not is_unavailable:
+                tie_transfer = {
+                    "line_id": line.line_id,
+                    "source": curtailable_load_node,
+                    "destination": dest_node,
+                    "transfer_mw": 0.100,
+                }
+            break
+
+    return {
+        "feeder_node": feeder_node,
+        "load_node": curtailable_load_node,
+        "tie_transfer": tie_transfer,
+        "transformer_id": transformer_id,
+    }
+
+
 class OperationsSpecialist:
     """
     Operations Specialist:
     - Inspects active incident state and live grid telemetry.
     - Proposes at most 3 plausible candidate actions mapping directly to MCP actions.
+    - Dynamically resolves affected assets, feeder routing, and curtailable load zones from live GridState topology.
+    - Deterministically handles multiple overheated transformers or escalates when multi-feeder complexity exceeds budget.
     - Synthesizes findings and recommendations via LLMClient.
     - Does NOT execute actions.
     - Enforces MAX_CANDIDATES = 3.
@@ -74,6 +156,7 @@ class OperationsSpecialist:
             "active_violations": [v.description for v in incident_state.active_violations],
         })
 
+        # Nominal stable state check
         if incident_state.is_stable and not incident_state.active_violations:
             default_finding = "Grid operating in nominal stable state. Zero violations detected."
             default_rec = "Continue normal baseline monitoring."
@@ -96,87 +179,8 @@ class OperationsSpecialist:
                 recommendation=rec,
             )
 
-# Transformer-to-feeder topology mapping
-TRANSFORMER_FEEDER_MAP: dict[str, str] = {
-    "T01": "N04",
-    "T05": "N04",
-    "T02": "N05",
-    "T04": "N05",
-    "T03": "N06",
-}
-
-# Feeder-to-curtailable-load-zone mapping (non-critical load zones)
-FEEDER_CURTAILABLE_LOAD_MAP: dict[str, str] = {
-    "N04": "N07",  # Feeder-A -> Residential-A (LZ01)
-    "N05": "N08",  # Feeder-B -> Commercial-A (LZ02); LZ04 at N10 is critical
-    "N06": "N09",  # Feeder-C -> Industrial-A (LZ03)
-}
-
-# Feeder tie-line adjacent destinations
-FEEDER_TIE_LINE_DESTINATIONS: dict[str, dict[str, str]] = {
-    "N04": {"line_id": "L08", "destination": "N05"},
-    "N05": {"line_id": "L08", "destination": "N04"},
-}
-
-
-class OperationsSpecialist:
-    """
-    Operations Specialist:
-    - Inspects active incident state and live grid telemetry.
-    - Proposes at most 3 plausible candidate actions mapping directly to MCP actions.
-    - Dynamically resolves affected assets, feeder routing, and curtailable load zones from telemetry.
-    - Synthesizes findings and recommendations via LLMClient.
-    - Does NOT execute actions.
-    - Enforces MAX_CANDIDATES = 3.
-    """
-    MAX_CANDIDATES: int = 3
-
-    def __init__(self, llm_client: Optional[LLMClient] = None) -> None:
-        self.llm_client = llm_client or LLMClient()
-
-    def analyze(
-        self,
-        incident_state: IncidentStateResponse,
-        grid_state: Optional[GridStateResponse] = None,
-    ) -> SpecialistResult:
-        evidence: list[Any] = []
-        evidence.append({
-            "scenario_id": incident_state.scenario_id,
-            "is_stable": incident_state.is_stable,
-            "frequency_hz": incident_state.frequency_hz,
-            "ambient_temp_c": incident_state.ambient_temp_c,
-            "tripped_lines": list(incident_state.tripped_lines),
-            "overheated_transformers": list(incident_state.overheated_transformers),
-            "active_violations": [v.description for v in incident_state.active_violations],
-        })
-
-        if incident_state.is_stable and not incident_state.active_violations:
-            default_finding = "Grid operating in nominal stable state. Zero violations detected."
-            default_rec = "Continue normal baseline monitoring."
-            finding, rec = self.llm_client.generate_narrative(
-                agent_role=SpecialistRole.OPERATIONS.value,
-                status=SpecialistStatus.ACCEPT.value,
-                candidates=[],
-                evidence=evidence,
-                risks=[],
-                default_finding=default_finding,
-                default_recommendation=default_rec,
-            )
-            return SpecialistResult(
-                agent=SpecialistRole.OPERATIONS.value,
-                status=SpecialistStatus.ACCEPT.value,
-                candidates=[],
-                finding=finding,
-                evidence=evidence,
-                risks=[],
-                recommendation=rec,
-            )
-
-        candidates: list[dict[str, Any]] = []
-        risks: list[str] = []
-
-        # Identify all overheated / violated transformers from telemetry (not hardcoded scenario_id)
-        overheated_set = set(incident_state.overheated_transformers)
+        # 1. Collect all overheated transformers from telemetry
+        overheated_set: set[str] = set(incident_state.overheated_transformers)
         for v in incident_state.active_violations:
             if v.violation_type == "TRANSFORMER_OVERHEAT" and v.target_id:
                 overheated_set.add(v.target_id)
@@ -188,42 +192,143 @@ class OperationsSpecialist:
                 overheated_set.add("T02")
             elif "T05" in v.description:
                 overheated_set.add("T05")
+            elif "T03" in v.description:
+                overheated_set.add("T03")
 
-        if overheated_set:
-            primary_xfmr = sorted(list(overheated_set))[0]
-            feeder_node = TRANSFORMER_FEEDER_MAP.get(primary_xfmr, "N05")
-            load_target = FEEDER_CURTAILABLE_LOAD_MAP.get(feeder_node, "N08")
-            tie_info = FEEDER_TIE_LINE_DESTINATIONS.get(feeder_node)
+        if not overheated_set:
+            # Violations exist but no overheated transformer identified; ESCALATE for operator safety
+            default_finding = "Active grid violations detected without identified transformer overload."
+            default_rec = "Escalate unclassified incident to grid operator for evaluation."
+            finding, rec = self.llm_client.generate_narrative(
+                agent_role=SpecialistRole.OPERATIONS.value,
+                status=SpecialistStatus.ESCALATE.value,
+                candidates=[],
+                evidence=evidence,
+                risks=["Unclassified active violations present on network."],
+                default_finding=default_finding,
+                default_recommendation=default_rec,
+            )
+            return SpecialistResult(
+                agent=SpecialistRole.OPERATIONS.value,
+                status=SpecialistStatus.ESCALATE.value,
+                candidates=[],
+                finding=finding,
+                evidence=evidence,
+                risks=["Unclassified active violations present on network."],
+                recommendation=rec,
+            )
 
-            # Candidate 1: Immediate demand curtailment on the affected feeder's curtailable load zone
+        # 2. Resolve topology for each overheated transformer from live grid_state
+        tripped_lines = set(incident_state.tripped_lines)
+        resolved_topologies: dict[str, dict[str, Any]] = {}
+        for xfmr_id in sorted(list(overheated_set)):
+            top = _resolve_transformer_topology(grid_state, xfmr_id, tripped_lines)
+            if top is None:
+                # Cannot derive safe topological path from supplied live grid state; ESCALATE
+                finding_esc = f"Topology resolution failed for overheated transformer {xfmr_id}: unable to derive safe feeder/load routing from live grid topology."
+                rec_esc = f"Escalate incident to grid dispatcher: missing or unresolvable topology for transformer {xfmr_id}."
+                finding, rec = self.llm_client.generate_narrative(
+                    agent_role=SpecialistRole.OPERATIONS.value,
+                    status=SpecialistStatus.ESCALATE.value,
+                    candidates=[],
+                    evidence=evidence,
+                    risks=[f"Unresolvable topology for {xfmr_id}; automated action formulation blocked."],
+                    default_finding=finding_esc,
+                    default_recommendation=rec_esc,
+                )
+                return SpecialistResult(
+                    agent=SpecialistRole.OPERATIONS.value,
+                    status=SpecialistStatus.ESCALATE.value,
+                    candidates=[],
+                    finding=finding,
+                    evidence=evidence,
+                    risks=[f"Unresolvable topology for {xfmr_id}; automated action formulation blocked."],
+                    recommendation=rec,
+                )
+            resolved_topologies[xfmr_id] = top
+
+        # 3. Group affected transformers by feeder bus
+        feeders_map: dict[str, list[str]] = {}
+        for xfmr_id, top in resolved_topologies.items():
+            f_node = top["feeder_node"]
+            feeders_map.setdefault(f_node, []).append(xfmr_id)
+
+        # 4. Multi-feeder compound incident handling:
+        # If multiple disparate feeders are simultaneously overheated, a single 3-candidate budget
+        # cannot safely resolve all multi-feeder overloads without omitting affected assets.
+        if len(feeders_map) > 1:
+            affected_feeders_list = sorted(list(feeders_map.keys()))
+            all_xfmrs_list = sorted(list(overheated_set))
+            finding_esc = (
+                f"Compound multi-feeder incident detected across {len(feeders_map)} feeders {affected_feeders_list} "
+                f"(transformers: {all_xfmrs_list}). Automated candidate budget of {self.MAX_CANDIDATES} cannot safely "
+                f"cover simultaneous multi-feeder overloads; escalating to system dispatcher."
+            )
+            rec_esc = "Escalate compound multi-feeder incident to dispatcher for coordinated multi-branch intervention."
+            risks_esc = [
+                f"Simultaneous thermal overloads across feeders {affected_feeders_list}; tie-line transfers between overloaded feeders are blocked."
+            ]
+            finding, rec = self.llm_client.generate_narrative(
+                agent_role=SpecialistRole.OPERATIONS.value,
+                status=SpecialistStatus.ESCALATE.value,
+                candidates=[],
+                evidence=evidence,
+                risks=risks_esc,
+                default_finding=finding_esc,
+                default_recommendation=rec_esc,
+            )
+            return SpecialistResult(
+                agent=SpecialistRole.OPERATIONS.value,
+                status=SpecialistStatus.ESCALATE.value,
+                candidates=[],
+                finding=finding,
+                evidence=evidence,
+                risks=risks_esc,
+                recommendation=rec,
+            )
+
+        # 5. Single-feeder incident: formulate candidates dynamically from resolved topology
+        primary_feeder = next(iter(feeders_map.keys()))
+        xfmrs_on_feeder = feeders_map[primary_feeder]
+        primary_xfmr = xfmrs_on_feeder[0]
+        top = resolved_topologies[primary_xfmr]
+        load_target = top["load_node"]
+        tie_info = top["tie_transfer"]
+
+        candidates: list[dict[str, Any]] = []
+        risks: list[str] = []
+
+        # Candidate 1: Load restriction on the affected feeder's curtailable load zone
+        candidates.append({
+            "action_type": "load_restriction",
+            "parameters": {"target": load_target, "reduction_pct": 15.0},
+        })
+
+        # Candidate 2: Power rerouting across emergency tie-line if available and healthy
+        if tie_info:
             candidates.append({
-                "action_type": "load_restriction",
-                "parameters": {"target": load_target, "reduction_pct": 15.0},
+                "action_type": "load_transfer",
+                "parameters": {
+                    "line_id": tie_info["line_id"],
+                    "source": tie_info["source"],
+                    "destination": tie_info["destination"],
+                    "transfer_mw": tie_info["transfer_mw"],
+                },
             })
 
-            # Candidate 2: Power rerouting across emergency tie-line if available for this feeder
-            if tie_info:
+        # Candidate 3: Isolation of overheated unit(s)
+        for x_id in xfmrs_on_feeder:
+            if len(candidates) < self.MAX_CANDIDATES:
                 candidates.append({
-                    "action_type": "load_transfer",
-                    "parameters": {
-                        "line_id": tie_info["line_id"],
-                        "source": load_target,
-                        "destination": tie_info["destination"],
-                        "transfer_mw": 0.100,
-                    },
+                    "action_type": "isolate_transformer",
+                    "parameters": {"transformer_id": x_id},
                 })
 
-            # Candidate 3: Isolation of overheated unit
-            candidates.append({
-                "action_type": "isolate_transformer",
-                "parameters": {"transformer_id": primary_xfmr},
-            })
+        risks.append(f"Transformer(s) {xfmrs_on_feeder} on feeder {primary_feeder} exceeding 110.0°C maximum thermal limit.")
+        if not tie_info:
+            risks.append(f"No operational tie-line route available from feeder {primary_feeder}; rerouting unavailable.")
 
-            risks.append(f"{primary_xfmr} thermal runaway risk exceeding 110.0°C maximum limit.")
-            if tie_info and tie_info["line_id"] in incident_state.tripped_lines:
-                risks.append(f"Tie-line {tie_info['line_id']} is locked out / tripped in incident telemetry; load transfer may be unavailable.")
-
-        # Strict rate-limit guardrail
+        # Rate-limit guardrail
         if len(candidates) > self.MAX_CANDIDATES:
             raise ValueError(
                 f"Operations proposed {len(candidates)} candidates, exceeding MAX_CANDIDATES={self.MAX_CANDIDATES}"
@@ -234,7 +339,8 @@ class OperationsSpecialist:
         # Assign stable unique candidate_id to each candidate
         for idx, cand in enumerate(chosen_candidates):
             cand["candidate_id"] = f"C{idx:02d}"
-        default_finding = f"Identified {len(chosen_candidates)} operational candidates to relieve transformer overheating."
+
+        default_finding = f"Identified {len(chosen_candidates)} operational candidates to relieve transformer overheating on feeder {primary_feeder}."
         default_rec = "Evaluate operational candidate actions through MCP sandbox isolation before human approval."
 
         finding, rec = self.llm_client.generate_narrative(
@@ -385,6 +491,12 @@ class PlanningSpecialist:
                 overheated_set.add("T01")
             elif "T04" in getattr(v, "description", ""):
                 overheated_set.add("T04")
+            elif "T02" in getattr(v, "description", ""):
+                overheated_set.add("T02")
+            elif "T05" in getattr(v, "description", ""):
+                overheated_set.add("T05")
+            elif "T03" in getattr(v, "description", ""):
+                overheated_set.add("T03")
 
         planning_candidates: list[dict[str, Any]] = []
         for xfmr_id in sorted(list(overheated_set)):

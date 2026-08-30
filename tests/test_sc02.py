@@ -1,19 +1,33 @@
 """
 Comprehensive integration and unit tests for Scenario SC02:
 Storm-induced residential demand surge on Feeder-A with T01 transformer overload,
-secondary constraint safety rejections, and specialist telemetry-driven generalization.
+secondary constraint safety rejections, live topology resolution, and specialist generalization.
 """
 
 from __future__ import annotations
 
+import ast
+import inspect
 import os
+from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import MagicMock
 
+import gridmind.specialists
 from gridmind.audit_store import AuditStore
 from gridmind.commander import AuditRecordStatus, GridMindCommander
-from gridmind.contract import ActionRequest, EvaluationResponse, IncidentStateResponse, ViolationDTO
+from gridmind.contract import (
+    ActionRequest,
+    EvaluationResponse,
+    GridStateResponse,
+    IncidentStateResponse,
+    LineDTO,
+    LoadZoneDTO,
+    NodeDTO,
+    TransformerDTO,
+    ViolationDTO,
+)
 from gridmind.engine import GridMindEngine
 from gridmind.llm import LLMClient
 from gridmind.loader import load_curated_grid
@@ -169,9 +183,11 @@ class TestScenarioSC02(unittest.TestCase):
         self.assertLess(t01_dto.temperature_c, 110.0)
 
     def test_05_specialist_generalization_from_telemetry_without_scenario_id(self) -> None:
-        """5. Regression: Proves specialists deduce targets strictly from telemetry rather than scenario_id."""
+        """5. Regression: Proves specialists deduce targets strictly from telemetry + live GridState."""
         ops = OperationsSpecialist(llm_client=self.mock_llm)
         plan_spec = PlanningSpecialist(llm_client=self.mock_llm)
+        service = GridMindService()
+        live_grid = service.get_grid_state()
 
         # Case A: Synthetic telemetry with T01 overheated and dummy scenario ID
         synth_t01 = IncidentStateResponse(
@@ -193,8 +209,9 @@ class TestScenarioSC02(unittest.TestCase):
                 )
             ],
         )
-        res_a = ops.analyze(synth_t01)
+        res_a = ops.analyze(synth_t01, grid_state=live_grid)
         # Must target Feeder-A curtailable zone N07
+        self.assertEqual(res_a.status, SpecialistStatus.ACCEPT.value)
         self.assertEqual(res_a.candidates[0]["action_type"], "load_restriction")
         self.assertEqual(res_a.candidates[0]["parameters"]["target"], "N07")
         self.assertEqual(res_a.candidates[1]["parameters"]["source"], "N07")
@@ -224,8 +241,9 @@ class TestScenarioSC02(unittest.TestCase):
                 )
             ],
         )
-        res_b = ops.analyze(synth_t04)
+        res_b = ops.analyze(synth_t04, grid_state=live_grid)
         # Must target Feeder-B curtailable zone N08
+        self.assertEqual(res_b.status, SpecialistStatus.ACCEPT.value)
         self.assertEqual(res_b.candidates[0]["action_type"], "load_restriction")
         self.assertEqual(res_b.candidates[0]["parameters"]["target"], "N08")
         self.assertEqual(res_b.candidates[1]["parameters"]["source"], "N08")
@@ -234,6 +252,175 @@ class TestScenarioSC02(unittest.TestCase):
 
         plan_b = plan_spec.analyze_long_term(synth_t04, safe_actions=res_b.candidates)
         self.assertEqual(plan_b.candidates[0]["parameters"]["transformer_id"], "T04")
+
+    def test_06_multi_transformer_compound_incident_escalation(self) -> None:
+        """6. Qodo Finding 1: Multi-feeder simultaneous overload (T01 + T04) returns ESCALATE without dropping telemetry."""
+        ops = OperationsSpecialist(llm_client=self.mock_llm)
+        plan_spec = PlanningSpecialist(llm_client=self.mock_llm)
+        service = GridMindService()
+        live_grid = service.get_grid_state()
+
+        compound_inc = IncidentStateResponse(
+            scenario_id="COMPOUND_SCENARIO",
+            is_stable=False,
+            frequency_hz=49.8,
+            ambient_temp_c=32.0,
+            demand_multiplier=1.15,
+            tripped_lines=[],
+            overheated_transformers=["T01", "T04"],
+            unserved_critical_loads=[],
+            active_violations=[
+                ViolationDTO(violation_type="TRANSFORMER_OVERHEAT", target_id="T01", actual_value=116.0, limit_value=110.0, description="T01 overheat"),
+                ViolationDTO(violation_type="TRANSFORMER_OVERHEAT", target_id="T04", actual_value=118.0, limit_value=110.0, description="T04 overheat"),
+            ],
+        )
+
+        res = ops.analyze(compound_inc, grid_state=live_grid)
+        # Multi-feeder compound incident must explicitly ESCALATE rather than silently picking T01
+        self.assertEqual(res.status, SpecialistStatus.ESCALATE.value)
+        self.assertIn("Compound multi-feeder incident", res.finding)
+        self.assertIn("N04", res.finding)
+        self.assertIn("N05", res.finding)
+
+        # Planning specialist must generate work orders for BOTH affected transformers
+        plan_res = plan_spec.analyze_long_term(compound_inc, safe_actions=[])
+        plan_xfmrs = {c["parameters"]["transformer_id"] for c in plan_res.candidates}
+        self.assertEqual(plan_xfmrs, {"T01", "T04"})
+
+    def test_07_multi_transformer_same_feeder_co_located_handling(self) -> None:
+        """7. Qodo Finding 1: Multiple transformers on same feeder (T01 + T05 on Feeder-A) are fully represented."""
+        ops = OperationsSpecialist(llm_client=self.mock_llm)
+        service = GridMindService()
+        live_grid = service.get_grid_state()
+
+        same_feeder_inc = IncidentStateResponse(
+            scenario_id="SAME_FEEDER_MULTI_XFMR",
+            is_stable=False,
+            frequency_hz=49.8,
+            ambient_temp_c=30.0,
+            demand_multiplier=1.15,
+            tripped_lines=[],
+            overheated_transformers=["T01", "T05"],
+            unserved_critical_loads=[],
+            active_violations=[
+                ViolationDTO(violation_type="TRANSFORMER_OVERHEAT", target_id="T01", actual_value=115.0, limit_value=110.0, description="T01 overheat"),
+                ViolationDTO(violation_type="TRANSFORMER_OVERHEAT", target_id="T05", actual_value=112.0, limit_value=110.0, description="T05 overheat"),
+            ],
+        )
+
+        res = ops.analyze(same_feeder_inc, grid_state=live_grid)
+        self.assertEqual(res.status, SpecialistStatus.ACCEPT.value)
+        self.assertLessEqual(len(res.candidates), OperationsSpecialist.MAX_CANDIDATES)
+
+        # Check candidate identities and parameters
+        self.assertEqual(res.candidates[0]["action_type"], "load_restriction")
+        self.assertEqual(res.candidates[0]["parameters"]["target"], "N07")
+        self.assertEqual(res.candidates[1]["action_type"], "load_transfer")
+        self.assertEqual(res.candidates[1]["parameters"]["source"], "N07")
+
+    def test_08_live_topology_relocation_and_tripped_tie_lines(self) -> None:
+        """8. Qodo Finding 2: Relocating a transformer in live GridState routes actions according to live topology."""
+        ops = OperationsSpecialist(llm_client=self.mock_llm)
+        service = GridMindService()
+        base_grid = service.get_grid_state()
+
+        # Construct synthetic GridState where T01 is located at N06 (Feeder-C) feeding N09
+        relocated_grid = GridStateResponse(
+            is_stable=False,
+            frequency_hz=50.0,
+            total_generation_kw=1000.0,
+            total_demand_kw=1000.0,
+            ambient_temp_c=25.0,
+            demand_multiplier=1.0,
+            storm=False,
+            nodes=base_grid.nodes,
+            lines=base_grid.lines,
+            transformers=[
+                TransformerDTO("T01", "N06", 500.0, 100.0, 115.0, 0, 5, "normal"),
+            ],
+            load_zones=base_grid.load_zones,
+            active_violations=[],
+        )
+
+        inc_t01 = IncidentStateResponse(
+            scenario_id="RELOCATED_XFMR_INCIDENT",
+            is_stable=False,
+            frequency_hz=50.0,
+            ambient_temp_c=25.0,
+            demand_multiplier=1.0,
+            tripped_lines=[],
+            overheated_transformers=["T01"],
+            unserved_critical_loads=[],
+            active_violations=[
+                ViolationDTO(violation_type="TRANSFORMER_OVERHEAT", target_id="T01", actual_value=115.0, limit_value=110.0, description="T01 overheat"),
+            ],
+        )
+
+        res = ops.analyze(inc_t01, grid_state=relocated_grid)
+        self.assertEqual(res.status, SpecialistStatus.ACCEPT.value)
+        # Must target Feeder-C curtailable load zone N09 derived from live GridState
+        self.assertEqual(res.candidates[0]["action_type"], "load_restriction")
+        self.assertEqual(res.candidates[0]["parameters"]["target"], "N09")
+
+        # Test tripped tie-line L08 prevents tie-transfer candidate from being proposed
+        inc_t04_l08_tripped = IncidentStateResponse(
+            scenario_id="L08_TRIPPED_SCENARIO",
+            is_stable=False,
+            frequency_hz=50.0,
+            ambient_temp_c=34.0,
+            demand_multiplier=1.15,
+            tripped_lines=["L08"],
+            overheated_transformers=["T04"],
+            unserved_critical_loads=[],
+            active_violations=[
+                ViolationDTO(violation_type="TRANSFORMER_OVERHEAT", target_id="T04", actual_value=115.0, limit_value=110.0, description="T04 overheat"),
+            ],
+        )
+        res_tripped = ops.analyze(inc_t04_l08_tripped, grid_state=base_grid)
+        self.assertEqual(res_tripped.status, SpecialistStatus.ACCEPT.value)
+        action_types = [c["action_type"] for c in res_tripped.candidates]
+        self.assertNotIn("load_transfer", action_types)
+
+    def test_09_unmapped_topology_escalates_without_unsafe_fallback(self) -> None:
+        """9. Qodo Finding 2: Unresolvable/missing topology safely returns ESCALATE rather than defaulting to N05/N08."""
+        ops = OperationsSpecialist(llm_client=self.mock_llm)
+
+        inc_t99 = IncidentStateResponse(
+            scenario_id="UNKNOWN_ASSET_INCIDENT",
+            is_stable=False,
+            frequency_hz=50.0,
+            ambient_temp_c=25.0,
+            demand_multiplier=1.0,
+            tripped_lines=[],
+            overheated_transformers=["T99"],
+            unserved_critical_loads=[],
+            active_violations=[
+                ViolationDTO(violation_type="TRANSFORMER_OVERHEAT", target_id="T99", actual_value=120.0, limit_value=110.0, description="Unknown T99 overheat"),
+            ],
+        )
+
+        # 1. With None grid_state -> ESCALATE
+        res_none = ops.analyze(inc_t99, grid_state=None)
+        self.assertEqual(res_none.status, SpecialistStatus.ESCALATE.value)
+        self.assertIn("Topology resolution failed", res_none.finding)
+
+        # 2. With grid_state that does not contain T99 -> ESCALATE
+        service = GridMindService()
+        base_grid = service.get_grid_state()
+        res_missing = ops.analyze(inc_t99, grid_state=base_grid)
+        self.assertEqual(res_missing.status, SpecialistStatus.ESCALATE.value)
+        self.assertIn("T99", res_missing.finding)
+
+    def test_10_single_authoritative_operations_specialist_class(self) -> None:
+        """10. Qodo Finding 3: Static AST inspection verifies exactly ONE OperationsSpecialist class declaration exists."""
+        specialists_file = Path(gridmind.specialists.__file__).resolve()
+        with open(specialists_file, "r", encoding="utf-8") as f:
+            tree = ast.parse(f.read(), filename=str(specialists_file))
+
+        class_names = [node.name for node in tree.body if isinstance(node, ast.ClassDef)]
+        self.assertEqual(class_names.count("OperationsSpecialist"), 1)
+        self.assertEqual(class_names.count("SafetySpecialist"), 1)
+        self.assertEqual(class_names.count("PlanningSpecialist"), 1)
 
 
 if __name__ == "__main__":
