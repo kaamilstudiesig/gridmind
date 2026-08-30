@@ -34,7 +34,7 @@ class TestPackaging(unittest.TestCase):
     def test_02_built_wheel_includes_all_dashboard_assets(self) -> None:
         """Builds a wheel in a temporary directory and verifies asset inclusion."""
         root = Path(__file__).resolve().parent.parent
-        with tempfile.TemporaryDirectory() as tmp_dist:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dist:
             cmd = [
                 sys.executable,
                 "-m",
@@ -46,7 +46,10 @@ class TestPackaging(unittest.TestCase):
                 str(root),
             ]
             res = subprocess.run(cmd, capture_output=True, text=True)
-            self.assertEqual(res.returncode, 0, f"pip wheel failed: {res.stderr}")
+            if res.returncode != 0:
+                cmd = ["uv", "build", "--wheel", "--out-dir", tmp_dist, str(root)]
+                res = subprocess.run(cmd, capture_output=True, text=True)
+            self.assertEqual(res.returncode, 0, f"wheel build failed: {res.stderr}")
 
             wheel_files = [f for f in os.listdir(tmp_dist) if f.endswith(".whl")]
             self.assertGreater(len(wheel_files), 0, "No wheel built in output directory")

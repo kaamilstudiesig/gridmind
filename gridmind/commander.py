@@ -185,11 +185,42 @@ class GridMindCommander:
         6. Invokes Planning specialist for long-term advice.
         7. Synthesizes a deterministic recommended action.
         8. Creates AuditRecord in PENDING_APPROVAL status and STOPS.
+
+        Idempotency: If a live PENDING_APPROVAL record already exists for the current
+        scenario_id + state_revision, that record is returned immediately without creating
+        a new plan. This prevents retry-induced duplicate plans from silently invalidating
+        a previously human-authorized record.
         """
-        inc_id = incident_id or f"INC-{uuid.uuid4().hex[:8].upper()}"
         inc_state = self.service.get_incident_state()
         grid_state = self.service.get_grid_state()
         state_revision = self.service.get_state_revision()
+
+        # --- Idempotency guard (Bug 1 fix) ---
+        # Return an existing live PENDING_APPROVAL record rather than creating a duplicate.
+        # Only skip if no caller-specified incident_id forces a fresh plan.
+        if not incident_id:
+            existing_raw = self.audit_store.get_pending_for_scenario(inc_state.scenario_id)
+            if existing_raw and existing_raw.get("state_revision") == state_revision:
+                existing_record = AuditRecord(**existing_raw)
+                logger.info(
+                    "plan_incident_response: returning existing PENDING_APPROVAL record %s "
+                    "(scenario=%s, revision=%s) — idempotent replay",
+                    existing_record.incident_id,
+                    existing_record.scenario_id,
+                    state_revision,
+                )
+                from gridmind.specialists import SpecialistResult  # local import to avoid cycle
+                specialist_results_typed: dict[str, SpecialistResult] = {}
+                return CommanderPlanResult(
+                    incident_id=existing_record.incident_id,
+                    scenario_id=existing_record.scenario_id,
+                    status=existing_record.status,
+                    recommended_action=existing_record.recommended_action,
+                    specialist_results=specialist_results_typed,
+                    audit_record=existing_record,
+                )
+
+        inc_id = incident_id or f"INC-{uuid.uuid4().hex[:8].upper()}"
 
         pre_evidence: list[Any] = [{
             "scenario_id": inc_state.scenario_id,

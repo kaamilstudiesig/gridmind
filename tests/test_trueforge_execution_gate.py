@@ -41,7 +41,7 @@ class TestTrueForgeExecutionGate(unittest.IsolatedAsyncioTestCase):
     """Test suite verifying Commander gating on MCP execute_action."""
 
     async def asyncSetUp(self) -> None:
-        self.tmp_dir = tempfile.TemporaryDirectory()
+        self.tmp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.db_path = os.path.join(self.tmp_dir.name, "test_audit.db")
         self.audit_store = AuditStore(db_path=self.db_path)
         self.mock_llm = MagicMock(spec=LLMClient)

@@ -1,20 +1,22 @@
 """
 Model Context Protocol (MCP) server for GridMind.
 
-Exposes exactly six deterministic grid simulation tools to AI agents and external callers:
+Exposes seven deterministic grid simulation and planning tools to AI agents and external callers:
 1. get_grid_state (read-only)
 2. get_incident_state (read-only)
 3. evaluate_action (read-only / sandboxed)
 4. execute_action (state-changing / Commander authorization gated)
 5. get_last_simulation_result (read-only)
 6. load_scenario (idempotent / state reset)
+7. plan_incident_response (Commander planning workflow bridge / PENDING_APPROVAL audit record creation)
 
 Architecture:
-    MCP Server (execute_action) -> GridMindCommander (approve_and_execute) -> GridMindService -> GridMindEngine
+    MCP Server (plan_incident_response / execute_action) -> GridMindCommander -> GridMindService -> GridMindEngine
 """
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Optional
 from pydantic import BaseModel, Field, field_validator
 import mcp.types as types
@@ -644,6 +646,70 @@ class GridMindMCPServer:
                     "success": False,
                     "scenario_id": service.active_scenario_id,
                 }
+
+        # Tool 7: plan_incident_response (Commander Planning Workflow Bridge)
+        @self.server.tool(
+            name="plan_incident_response",
+            description=(
+                "Triggers the multi-specialist Commander planning workflow (Operations, Safety, Planning) "
+                "for the active scenario or incident. Synthesizes a deterministic recommended action, creates and "
+                "persists an authoritative AuditRecord in PENDING_APPROVAL status in AuditStore, and returns the generated incident_id. "
+                "Idempotent: if a live PENDING_APPROVAL plan already exists for the current scenario and grid state, "
+                "returns that existing record without creating a duplicate. Safe to call on retry."
+            ),
+            annotations=IDEMPOTENT_MUTATING_ANNOTATIONS,
+        )
+        async def plan_incident_response(
+            scenario_id: Optional[str] = Field(
+                default=None,
+                description="Optional scenario ID to plan for (e.g. 'SC02'). If provided and different from active, loads the scenario first.",
+            ),
+        ) -> dict[str, Any]:
+            if scenario_id and scenario_id != service.active_scenario_id:
+                try:
+                    service.load_scenario(scenario_id)
+                except ValueError as load_err:
+                    return {
+                        "error": str(load_err),
+                        "success": False,
+                        "scenario_id": service.active_scenario_id,
+                        "incident_id": None,
+                        "status": "LOAD_ERROR",
+                        "recommended_action": None,
+                    }
+                # Invalidate stale records: this is a fast SQLite UPDATE and
+                # does not need to be offloaded to a worker thread.
+                commander.audit_store.invalidate_stale_pending_records(
+                    active_scenario_id=service.active_scenario_id,
+                    current_state_revision=service.get_state_revision(),
+                )
+
+            # incident_id is intentionally NOT accepted from the MCP caller.
+            # The Commander always generates a fresh UUID-based INC-* identifier
+            # or returns an existing idempotent PENDING_APPROVAL record.
+            # This prevents callers from injecting synthetic identifiers.
+            #
+            # Performance: commander.plan_incident_response() is fully synchronous.
+            # It calls three specialist LLM HTTP calls (each with up to 12 s timeout
+            # × 2 retries), which can block the event loop for up to 72 seconds in
+            # the worst case.  We offload the entire planning workflow to the
+            # default ThreadPoolExecutor so the event loop remains free to serve
+            # other MCP tools and health requests concurrently.
+            plan_res = await asyncio.to_thread(commander.plan_incident_response)
+            res_dict = plan_res.to_dict()
+
+            if plan_res.status == AuditRecordStatus.PENDING_APPROVAL.value:
+                res_dict["message"] = "Human approval required before execution."
+            elif plan_res.status == AuditRecordStatus.ESCALATED.value:
+                res_dict["message"] = "Incident response escalated to human control center. No action recommended."
+            elif plan_res.status == AuditRecordStatus.NO_SAFE_ACTION.value:
+                res_dict["message"] = "No safe operational intervention satisfies physical constraints."
+            elif plan_res.status == AuditRecordStatus.NOMINAL.value:
+                res_dict["message"] = "Grid conditions are nominal with no active violations."
+            else:
+                res_dict["message"] = f"Planning completed with status: {plan_res.status}"
+
+            return res_dict
 
 
 def create_mcp_server(

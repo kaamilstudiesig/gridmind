@@ -1,7 +1,7 @@
 """
 HTTP Transport Server for GridMind Model Context Protocol (MCP).
 
-Exposes the existing six deterministic grid simulation tools to TrueForge and
+Exposes seven deterministic grid simulation and planning tools to TrueForge and
 remote MCP connectors over HTTP:
 - Streamable HTTP (modern MCP 2.x standard) at endpoint: /mcp
 - Server-Sent Events (SSE fallback) at endpoint: /sse and /messages
