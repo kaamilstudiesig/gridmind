@@ -200,6 +200,71 @@ class TestMCPPlanningBridge(unittest.IsolatedAsyncioTestCase):
         self.assertIs(self.mcp_wrapper.service, self.service)
         self.assertIs(self.mcp_wrapper.audit_store, self.audit_store)
 
+    async def test_09_idempotent_retry_returns_same_incident_id(self) -> None:
+        """Test 9 — Regression: Bug 1 (Qodo). A retry call to plan_incident_response returns the
+        same incident_id and does NOT create a second PENDING_APPROVAL record, so a previously
+        authorized plan cannot be silently bypassed.
+        """
+        await self._call_tool("load_scenario", {"scenario_id": "SC02"})
+
+        plan_first = await self._call_tool("plan_incident_response", {})
+        first_id = plan_first["incident_id"]
+        self.assertEqual(plan_first["status"], "PENDING_APPROVAL")
+
+        # Simulate a TrueForge retry (e.g. network timeout then resend)
+        plan_retry = await self._call_tool("plan_incident_response", {})
+        retry_id = plan_retry["incident_id"]
+
+        # Must return the exact same incident_id, not a new one
+        self.assertEqual(first_id, retry_id, "Retry must return the same incident_id (idempotency)")
+
+        # Only one PENDING_APPROVAL record should exist for SC02
+        pending_records = self.audit_store.list(
+            scenario_id="SC02", status="PENDING_APPROVAL"
+        )
+        self.assertEqual(
+            len(pending_records),
+            1,
+            f"Expected exactly 1 PENDING_APPROVAL record, got {len(pending_records)}",
+        )
+
+    async def test_10_mcp_tool_does_not_accept_fabricated_incident_id(self) -> None:
+        """Test 10 — Regression: Bug 2 (Qodo). The plan_incident_response MCP tool MUST NOT
+        accept an incident_id parameter from the caller; new plans always receive a
+        Commander-generated INC-* identifier.
+        """
+        import inspect
+        import asyncio
+
+        await self._call_tool("load_scenario", {"scenario_id": "SC02"})
+
+        # Retrieve the actual tool handler registered on the MCP server
+        tools = await self.server.list_tools()
+        tool_names = [t.name for t in tools]
+        self.assertIn("plan_incident_response", tool_names)
+
+        # Locate the registered tool descriptor
+        tool_desc = next(t for t in tools if t.name == "plan_incident_response")
+
+        # The input schema must NOT include an 'incident_id' property
+        schema = tool_desc.input_schema or {}
+        properties = schema.get("properties", {})
+        self.assertNotIn(
+            "incident_id",
+            properties,
+            "The plan_incident_response MCP tool must not expose 'incident_id' as an input "
+            "parameter — callers must not be able to fabricate incident identifiers.",
+        )
+
+        # Even if a caller somehow passes incident_id in the arguments dict,
+        # the result must still be a valid Commander-generated INC-* identifier
+        plan_res = await self._call_tool("plan_incident_response", {})
+        self.assertTrue(
+            plan_res["incident_id"].startswith("INC-"),
+            "incident_id must be a Commander-generated INC-* identifier",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
+

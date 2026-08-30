@@ -652,7 +652,9 @@ class GridMindMCPServer:
             description=(
                 "Triggers the multi-specialist Commander planning workflow (Operations, Safety, Planning) "
                 "for the active scenario or incident. Synthesizes a deterministic recommended action, creates and "
-                "persists an authoritative AuditRecord in PENDING_APPROVAL status in AuditStore, and returns the generated incident_id."
+                "persists an authoritative AuditRecord in PENDING_APPROVAL status in AuditStore, and returns the generated incident_id. "
+                "Idempotent: if a live PENDING_APPROVAL plan already exists for the current scenario and grid state, "
+                "returns that existing record without creating a duplicate. Safe to call on retry."
             ),
             annotations=IDEMPOTENT_MUTATING_ANNOTATIONS,
         )
@@ -679,6 +681,10 @@ class GridMindMCPServer:
                     current_state_revision=service.get_state_revision(),
                 )
 
+            # incident_id is intentionally NOT accepted from the MCP caller.
+            # The Commander always generates a fresh UUID-based INC-* identifier
+            # or returns an existing idempotent PENDING_APPROVAL record.
+            # This prevents callers from injecting synthetic identifiers.
             plan_res = commander.plan_incident_response()
             res_dict = plan_res.to_dict()
 
