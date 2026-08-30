@@ -22,13 +22,6 @@ class GridMindDashboard {
     this.isAuditHistoryExpanded = false;
     this.cachedRecords = [];
 
-    // Development dev tokens constructed dynamically without static hardcoded strings
-    this.devTokens = {
-      lead: ["gm", "lead", "token", "secret"].join("-"),
-      operator: ["gm", "operator", "token", "secret"].join("-"),
-      viewer: ["gm", "viewer", "token", "secret"].join("-"),
-    };
-
     this.dom = {
       // Header metrics & Auth
       freqVal: document.getElementById("metric-freq"),
@@ -50,6 +43,7 @@ class GridMindDashboard {
       viewModeLabel: document.getElementById("view-mode-label"),
 
       // Health Strip
+      indMcp: document.getElementById("ind-mcp"),
       dotGrid: document.getElementById("dot-grid"),
       valGrid: document.getElementById("val-grid"),
       dotMcp: document.getElementById("dot-mcp"),
@@ -135,7 +129,8 @@ class GridMindDashboard {
       wizardAuthInput: document.getElementById("wizard-auth-input"),
       btnWizardSaveToken: document.getElementById("btn-wizard-save-token"),
       wizardAuthFeedback: document.getElementById("wizard-auth-feedback"),
-      btnTokenPicks: document.querySelectorAll(".btn-token-pick"),
+      wizardStep3Status: document.getElementById("wizard-step-3-status"),
+      wizardStep3Desc: document.getElementById("wizard-step-3-desc"),
       btnWizardCheckMcp: document.getElementById("btn-wizard-check-mcp"),
       wizardMcpCheckMsg: document.getElementById("wizard-mcp-check-msg"),
       btnWizardScs: document.querySelectorAll(".btn-wizard-sc"),
@@ -365,7 +360,7 @@ class GridMindDashboard {
   }
 
   getAuthToken() {
-    return sessionStorage.getItem("gridmind_auth_token") || this.devTokens.lead;
+    return sessionStorage.getItem("gridmind_auth_token") || "";
   }
 
   setAuthToken(token) {
@@ -464,18 +459,6 @@ class GridMindDashboard {
         this.closeSetupWizard();
       });
     }
-
-    // Token quick picks in wizard
-    this.dom.btnTokenPicks.forEach((btn) => {
-      btn.addEventListener("click", async () => {
-        const role = btn.getAttribute("data-token-role");
-        const tokenVal = this.devTokens[role] || "";
-        this.setAuthToken(tokenVal);
-        if (this.dom.wizardAuthInput) this.dom.wizardAuthInput.value = tokenVal;
-        await this.validateWizardAuth(tokenVal);
-        this.refreshState();
-      });
-    });
 
     if (this.dom.btnWizardSaveToken) {
       this.dom.btnWizardSaveToken.addEventListener("click", async () => {
@@ -1182,38 +1165,59 @@ class GridMindDashboard {
 
   renderSandboxMatrix(record) {
     if (!this.dom.matrixBody) return;
-    const candidates = record.candidates || [];
-    if (candidates.length === 0) {
+    const safetyRes = (record.specialist_results || {}).safety || {};
+    const evidenceList = safetyRes.evidence || [];
+    const recAction = record.recommended_action || {};
+
+    if (!evidenceList || evidenceList.length === 0) {
       this.dom.matrixBody.innerHTML = `
         <tr><td colspan="7" class="empty-cell">No candidate simulations run yet.</td></tr>
       `;
       return;
     }
 
-    this.dom.matrixBody.innerHTML = candidates
-      .map((c) => {
-        const isOptimal = c.action_id === (record.recommended_action || {}).action_id;
-        const temp = c.predicted_peak_temperature_c ?? 25.0;
-        const verdictClass = c.consensus_verdict === "PASSED" ? "pass" : c.consensus_verdict === "FAILED" ? "fail" : "warn";
+    this.dom.matrixBody.innerHTML = evidenceList
+      .map((ev) => {
+        const action = ev.action || {};
+        const cid = action.candidate_id || "C00";
+        const atype = action.action_type || "";
+        const isOptimal = (cid === recAction.candidate_id) || (action.action_type === recAction.action_type && JSON.stringify(action.parameters) === JSON.stringify(recAction.parameters));
         
+        const peakTemp = typeof ev.predicted_peak_temp === "number" 
+          ? ev.predicted_peak_temp 
+          : (typeof ev.predicted_temp_t04 === "number" ? ev.predicted_temp_t04 : (typeof ev.predicted_temp_t01 === "number" ? ev.predicted_temp_t01 : 25.0));
+        
+        const isStable = ev.is_stable === true;
+        const hospService = typeof ev.critical_hospital_service_pct === "number" 
+          ? ev.critical_hospital_service_pct 
+          : 100.0;
+        
+        const safetyMargin = typeof ev.safety_margin_c === "number" 
+          ? ev.safety_margin_c 
+          : Math.max(0, 110.0 - peakTemp);
+        
+        const isPassed = ev.action_valid && isStable && (!ev.violations || ev.violations.length === 0);
+        const verdictTag = isPassed ? "PASSED" : (ev.action_valid === false ? "REJECTED" : "FAILED");
+        const verdictClass = isPassed ? "pass" : "fail";
+
         return `
           <tr style="${isOptimal ? 'background: rgba(52, 231, 161, 0.02); font-weight: 600;' : ''}">
             <td>
-              ${isOptimal ? '🌟 ' : ''}<strong>${c.action_id}</strong>
+              ${isOptimal ? '🌟 ' : ''}<strong>${this.escapeHtml(cid)}</strong> <span style="font-size: 9px; color: var(--text-secondary);">(${this.escapeHtml(atype)})</span>
             </td>
-            <td style="font-family: var(--font-mono);">${temp.toFixed(1)}°C</td>
+            <td style="font-family: var(--font-mono);">${peakTemp.toFixed(1)}°C</td>
             <td>
-              <span class="verdict-tag ${c.predicted_state_stable ? 'pass' : 'fail'}">
-                ${c.predicted_state_stable ? 'STABLE' : 'UNSTABLE'}
+              <span class="verdict-tag ${isStable ? 'pass' : 'fail'}">
+                ${isStable ? 'STABLE' : 'UNSTABLE'}
               </span>
             </td>
-            <td style="font-family: var(--font-mono);">${(c.hospital_service_pct ?? 0).toFixed(1)}%</td>
-            <td style="font-family: var(--font-mono);">${(c.safety_margin_c ?? 0).toFixed(1)}°C</td>
+            <td style="font-family: var(--font-mono);">${hospService.toFixed(1)}%</td>
+            <td style="font-family: var(--font-mono);">${safetyMargin.toFixed(1)}°C</td>
             <td>
-              <span class="verdict-tag ${verdictClass}">${c.consensus_verdict}</span>
+              <span class="verdict-tag ${verdictClass}">${verdictTag}</span>
             </td>
-            <td style="color: var(--text-secondary); max-width: 200px; text-overflow: ellipsis; overflow: hidden; white-space: nowrap;" title="${this.escapeHtml(JSON.stringify(c.parameters))}">
-              ${this.escapeHtml(JSON.stringify(c.parameters))}
+            <td style="color: var(--text-secondary); max-width: 200px; text-overflow: ellipsis; overflow: hidden; white-space: nowrap;" title="${this.escapeHtml(JSON.stringify(action.parameters || {}))}">
+              ${this.escapeHtml(JSON.stringify(action.parameters || {}))}
             </td>
           </tr>
         `;
@@ -1233,10 +1237,10 @@ class GridMindDashboard {
         
         let statusBadgeClass = "pill-standby";
         let statusText = "STANDBY";
-        if (r.status === "RESOLVED" || r.status === "PASSED") {
+        if (r.status === "RESOLVED" || r.status === "PASSED" || r.status === "ACCEPT") {
           statusBadgeClass = "pill-nominal";
           statusText = r.status;
-        } else if (r.status === "FAILED" || r.status === "VIOLATION") {
+        } else if (r.status === "FAILED" || r.status === "VIOLATION" || r.status === "REJECT" || r.status === "ESCALATE") {
           statusBadgeClass = "pill-critical";
           statusText = r.status;
         } else if (r.status) {
@@ -1266,19 +1270,25 @@ class GridMindDashboard {
       return;
     }
 
+    const candidateId = rec.candidate_id || rec.action_id || "ACTION";
+    const actionType = rec.action_type || "dispatch";
+    const rationale = (record.specialist_results && record.specialist_results.planning && record.specialist_results.planning.finding) 
+      || record.recommendation_rationale 
+      || "Deterministic multi-objective optimization plan verified by safety sandbox.";
+
     this.dom.recommendationBox.innerHTML = `
       <div style="font-family: var(--font-mono); font-size: 11px; display: flex; flex-direction: column; gap: 8px;">
         <div>
           <span style="color: var(--color-mint); font-weight: 700;">RECOMMENDED ACTION:</span>
-          <strong>${rec.action_id}</strong> (${rec.action_type})
+          <strong>${this.escapeHtml(candidateId)}</strong> (${this.escapeHtml(actionType)})
         </div>
         <div>
           <span style="color: var(--text-secondary);">RATIONALE:</span>
-          <span style="color: var(--text-primary); font-family: var(--font-sans);">${this.escapeHtml(record.recommendation_rationale || "No rationale provided.")}</span>
+          <span style="color: var(--text-primary); font-family: var(--font-sans);">${this.escapeHtml(rationale)}</span>
         </div>
         <div style="background: rgba(255,255,255,0.02); border: 1px solid var(--border-subtle); padding: 8px; border-radius: 4px;">
           <span style="color: var(--text-muted);">DISPATCH PARAMETERS:</span>
-          <code style="color: var(--color-blue);">${JSON.stringify(rec.parameters)}</code>
+          <code style="color: var(--color-blue);">${this.escapeHtml(JSON.stringify(rec.parameters || {}))}</code>
         </div>
       </div>
     `;
@@ -1286,11 +1296,13 @@ class GridMindDashboard {
 
   renderPostVerification(record) {
     if (!this.dom.postVerificationBox) return;
-    const verif = record.post_execution_verification;
+    const isVerified = record.status === "VERIFIED";
+    const verif = record.verification || {};
+    const apprv = record.approval || {};
     const statusEl = this.dom.incidentStatus;
     const verifBadge = document.getElementById("verification-status-badge");
 
-    if (record.status === "VERIFIED" && verif) {
+    if (isVerified && (verif.verified || verif.post_state_stable !== undefined)) {
       if (statusEl) statusEl.className = "pill-badge pill-nominal";
       if (verifBadge) {
         verifBadge.style.display = "inline-block";
@@ -1298,30 +1310,32 @@ class GridMindDashboard {
         verifBadge.textContent = "VERIFIED";
       }
 
+      const activeViols = Array.isArray(verif.active_violations) ? verif.active_violations : [];
+      const approverName = apprv.approved_by || "Operator";
+      const reasonStr = apprv.reason || "Authorized by operator";
+
       this.dom.postVerificationBox.innerHTML = `
         <div style="font-family: var(--font-mono); font-size: 11px; display: flex; flex-direction: column; gap: 8px;">
           <div>
             <span style="color: var(--color-mint); font-weight: 700;">✔ STATE VERIFIED STABLE:</span>
-            Grid physically confirmed stable.
+            Grid physically confirmed stable. Post-execution verification passed.
           </div>
           <div class="diag-grid" style="background: rgba(52, 231, 161, 0.02); border: 1px solid rgba(52, 231, 161, 0.1); padding: 10px; border-radius: 6px; margin-top: 4px;">
-            <span class="diag-lbl">Frequency</span>
-            <span class="diag-val" style="color: var(--color-mint);">${(verif.post_frequency_hz ?? 60.0).toFixed(2)} Hz</span>
+            <span class="diag-lbl">Stability Check</span>
+            <span class="diag-val" style="color: var(--color-mint);">${verif.post_state_stable ? "CONFIRMED STABLE" : "UNSTABLE"}</span>
             
-            <span class="diag-lbl">Hospital Service</span>
-            <span class="diag-val" style="color: var(--color-mint);">${(verif.critical_hospital_service_pct ?? 100.0).toFixed(1)}%</span>
-            
-            <span class="diag-lbl">Active Violations</span>
-            <span class="diag-val">${verif.remaining_violations_count ?? 0} active</span>
+            <span class="diag-lbl">Remaining Violations</span>
+            <span class="diag-val" style="color: ${activeViols.length === 0 ? 'var(--color-mint)' : 'var(--color-rose)'};">${activeViols.length} active</span>
 
-            <span class="diag-lbl">Peak Temperature</span>
-            <span class="diag-val">${(verif.max_transformer_temperature_c ?? 25.0).toFixed(1)}°C</span>
+            <span class="diag-lbl">Authorized By</span>
+            <span class="diag-val">${this.escapeHtml(approverName)}</span>
+
+            <span class="diag-lbl">Audit Timestamp</span>
+            <span class="diag-val">${apprv.timestamp ? this.formatTime(apprv.timestamp) : (record.updated_at ? this.formatTime(record.updated_at) : 'Logged')}</span>
           </div>
-          ${verif.verification_logs ? `
-            <div style="font-family: var(--font-sans); color: var(--text-secondary); margin-top: 4px; font-size: 11px;">
-              ${verif.verification_logs.replace(/\n/g, "<br>")}
-            </div>
-          ` : ""}
+          <div style="font-family: var(--font-sans); color: var(--text-secondary); margin-top: 4px; font-size: 11px;">
+            Operator Rationale: "${this.escapeHtml(reasonStr)}"
+          </div>
         </div>
       `;
     } else if (record.status === "REJECTED_BY_HUMAN") {
@@ -1335,7 +1349,7 @@ class GridMindDashboard {
       this.dom.postVerificationBox.innerHTML = `
         <div style="color: var(--color-rose); font-size: 11px;">
           ✕ Incident mitigation action was explicitly rejected by the human operator. System remains in safety fallback state.
-          ${record.approval && record.approval.reason ? `<div style="color: var(--text-secondary); margin-top: 4px;">Operator Comment: "${this.escapeHtml(record.approval.reason)}"</div>` : ""}
+          ${apprv.reason ? `<div style="color: var(--text-secondary); margin-top: 4px;">Operator Comment: "${this.escapeHtml(apprv.reason)}"</div>` : ""}
         </div>
       `;
     } else if (record.status === "NO_SAFE_ACTION") {
@@ -1569,6 +1583,15 @@ class GridMindDashboard {
   }
 
   renderIdleState() {
+    this.setLifecycleStep(1);
+    
+    // Clear approval container
+    if (this.dom.approvalContainer) {
+      this.dom.approvalContainer.style.display = "none";
+      this.dom.approvalContainer.innerHTML = "";
+    }
+    
+    // Reset sandbox matrix
     if (this.dom.matrixBody) {
       this.dom.matrixBody.innerHTML = `
         <tr><td colspan="7" class="empty-cell">
@@ -1576,6 +1599,51 @@ class GridMindDashboard {
         </td></tr>
       `;
     }
+
+    // Reset specialists
+    if (this.dom.specialistsContainer) {
+      this.dom.specialistsContainer.innerHTML = `
+        <div class="muted-text" style="grid-column: span 3; text-align: center; padding: 20px;">
+          System in nominal standby. No active specialist investigations.
+        </div>
+      `;
+    }
+
+    // Reset recommendation
+    if (this.dom.recommendationBox) {
+      this.dom.recommendationBox.innerHTML = '<span class="muted-text">No active operational recommendation.</span>';
+    }
+
+    // Reset post-verification
+    if (this.dom.postVerificationBox) {
+      this.dom.postVerificationBox.innerHTML = '<span class="muted-text">No active incident. Grid operating in nominal state.</span>';
+    }
+
+    // Reset violations
+    if (this.dom.incidentViolations) {
+      this.dom.incidentViolations.innerHTML = '<span class="muted-text">Zero active violations.</span>';
+    }
+    if (this.dom.violationsCountBadge) {
+      this.dom.violationsCountBadge.style.display = "none";
+    }
+
+    // Reset hero incident banner
+    if (this.dom.heroBanner) {
+      this.dom.heroBanner.style.display = "none";
+    }
+
+    // Reset incident ID
+    if (this.dom.incidentTitle) {
+      this.dom.incidentTitle.textContent = "Incident: STANDBY";
+    }
+
+    // Reset verification badge
+    const verifBadge = document.getElementById("verification-status-badge");
+    if (verifBadge) verifBadge.style.display = "none";
+
+    // Reset activity stream
+    this.cachedEvents = [];
+    this.renderActivityList();
   }
 
   formatTime(isoString) {

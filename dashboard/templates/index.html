@@ -549,18 +549,13 @@
               <span class="wizard-step-num">2</span>
               <div class="wizard-step-info">
                 <div class="wizard-step-title">Operator Session Configuration</div>
-                <div class="wizard-step-desc" id="wizard-step-2-desc">Select an authorized role token or enter custom token.</div>
+                <div class="wizard-step-desc" id="wizard-step-2-desc">Provide an operator Bearer token to authorize incident mitigation actions.</div>
               </div>
               <span class="wizard-status-badge" id="wizard-step-2-status">PENDING</span>
             </div>
             <div class="wizard-step-action">
-              <div class="quick-token-buttons">
-                <button class="btn-token-pick" data-token-role="lead">Lead Operator (Alice)</button>
-                <button class="btn-token-pick" data-token-role="operator">Operator (Bob)</button>
-                <button class="btn-token-pick" data-token-role="viewer">Viewer (Charlie)</button>
-              </div>
               <div class="token-input-row">
-                <input type="password" id="wizard-auth-input" placeholder="Or enter Bearer Token..." class="wizard-input">
+                <input type="password" id="wizard-auth-input" placeholder="Enter Bearer Token (e.g., from GRIDMIND_AUTH_TOKENS)..." class="wizard-input">
                 <button id="btn-wizard-save-token" class="btn-primary">Apply Key</button>
               </div>
               <div id="wizard-auth-feedback" class="wizard-feedback"></div>

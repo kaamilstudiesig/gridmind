@@ -400,15 +400,34 @@ def create_dashboard_app(
             yield
 
     last_mcp_activity_at: Optional[str] = None
+    last_mcp_tool_call_at: Optional[str] = None
+
+    # Instrument MCP Server call_tool to record real MCP tool invocations
+    orig_call_tool = mcp_server.call_tool
+
+    async def instrumented_call_tool(name: str, arguments: dict[str, Any], context=None):
+        nonlocal last_mcp_tool_call_at
+        last_mcp_tool_call_at = datetime.now(timezone.utc).isoformat()
+        return await orig_call_tool(name, arguments, context=context)
+
+    mcp_server.call_tool = instrumented_call_tool
 
     def get_active_mcp_sessions_count() -> int:
         if not mount_mcp:
             return 0
+        count = 0
+        # 1. Streamable HTTP sessions
         sm = getattr(mcp_server, "session_manager", None)
-        if sm is None:
-            return 0
-        instances = getattr(sm, "_server_instances", {})
-        return len(instances)
+        if sm is not None:
+            instances = getattr(sm, "_server_instances", {})
+            count += len(instances)
+        # 2. SSE transport sessions
+        for r in sse_app.routes:
+            if getattr(r, "path", None) == "/messages" and hasattr(r, "app") and hasattr(r.app, "__self__"):
+                sse_trans = r.app.__self__
+                writers = getattr(sse_trans, "_read_stream_writers", {})
+                count += len(writers)
+        return count
 
     app = FastAPI(
         title="GridMind Command Center",
@@ -601,7 +620,7 @@ def create_dashboard_app(
             "tools_count": len(tools),
             "tools": [t.name for t in tools],
             "active_sessions": active_sessions,
-            "last_tool_call_at": latest_rec.get("created_at") if latest_rec else None,
+            "last_tool_call_at": last_mcp_tool_call_at,
             "last_mcp_activity_at": last_mcp_activity_at,
         }
 
