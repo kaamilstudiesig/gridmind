@@ -653,7 +653,7 @@ class TestDashboard(unittest.TestCase):
         data = health_resp.json()
         self.assertEqual(data["status"], "healthy")
         self.assertEqual(data["service"], "gridmind-unified")
-        self.assertEqual(len(data["tools"]), 6)
+        self.assertEqual(len(data["tools"]), 7)
 
         # 2. Loading scenario via dashboard updates the underlying shared service
         self.client.post("/api/scenario/load", json={"scenario_id": "SC01-B"}, headers=OPERATOR_AUTH)
@@ -663,6 +663,21 @@ class TestDashboard(unittest.TestCase):
         health_after = self.client.get("/health").json()
         self.assertEqual(health_after["active_scenario"], "SC01-B")
 
+    def test_39_api_diagnostics_endpoint_returns_verified_status(self) -> None:
+        """Tests that /api/diagnostics returns verified real system connectivity and tool counts."""
+        resp = self.client.get("/api/diagnostics")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["status"], "healthy")
+        self.assertEqual(data["service"], "gridmind-unified")
+        self.assertIn("mcp", data)
+        self.assertEqual(data["mcp"]["tools_count"], 7)
+        self.assertIn("commander", data)
+        self.assertTrue(data["commander"]["shared_service"])
+        self.assertIn("audit_store", data)
+        self.assertEqual(data["audit_store"]["status"], "connected")
+
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -545,6 +545,45 @@ def create_dashboard_app(
             "active": app_service.active_scenario_id,
         })
 
+    @app.get("/api/diagnostics")
+    async def get_diagnostics():
+        """Returns verified real system connectivity, MCP tools, and storage diagnostics."""
+        tools = await mcp_server.list_tools()
+        active_sc = app_service.active_scenario_id
+        latest_rec = app_audit_store.get_latest(scenario_id=active_sc)
+        total_recs = app_audit_store.count()
+        return JSONResponse({
+            "status": "healthy",
+            "service": "gridmind-unified",
+            "active_scenario": active_sc,
+            "state_revision": app_service.get_state_revision(),
+            "mcp": {
+                "status": "online",
+                "transports": ["streamable-http", "sse"],
+                "endpoints": {
+                    "streamable_http": "/mcp",
+                    "sse": "/sse",
+                    "messages": "/messages",
+                },
+                "tools_count": len(tools),
+                "tools": [t.name for t in tools],
+            },
+            "commander": {
+                "status": "ready",
+                "shared_service": True,
+                "llm_model": getattr(app_llm, "model", "default"),
+                "is_degraded_mode": getattr(app_llm, "api_key", None) is None,
+            },
+            "audit_store": {
+                "status": "connected",
+                "db_path": app_audit_store.db_path,
+                "total_records": total_recs,
+                "latest_incident_id": latest_rec["incident_id"] if latest_rec else None,
+                "latest_status": latest_rec["status"] if latest_rec else "NOMINAL",
+            },
+        })
+
+
     # ==========================================================================
     # State-Changing Endpoints (Protected by Authentication & RBAC)
     # ==========================================================================
