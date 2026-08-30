@@ -390,17 +390,27 @@ class SafetySpecialist:
             cid = candidate["candidate_id"]
             eval_res = evaluations_by_id[cid]
             act_type = candidate.get("action_type", "unknown")
+            temps_map = dict(eval_res.predicted_transformer_temperatures_c) if eval_res.predicted_transformer_temperatures_c else {}
+            peak_temp = max(temps_map.values()) if temps_map else None
+            peak_xfmr = max(temps_map.keys(), key=lambda k: temps_map[k]) if temps_map else None
+            hosp_service = eval_res.critical_load_service_pct.get("LZ04") if isinstance(eval_res.critical_load_service_pct, dict) else None
+
             evidence.append({
                 "action": candidate,
                 "action_valid": eval_res.action_valid,
                 "is_stable": eval_res.is_stable,
                 "rejection_reason": eval_res.rejection_reason,
                 "violations": [v.description for v in eval_res.violations],
-                "predicted_temp_t01": eval_res.predicted_transformer_temperatures_c.get("T01"),
-                "predicted_temp_t04": eval_res.predicted_transformer_temperatures_c.get("T04"),
-                "predicted_temp_t02": eval_res.predicted_transformer_temperatures_c.get("T02"),
-                "predicted_temp_t05": eval_res.predicted_transformer_temperatures_c.get("T05"),
+                "predicted_transformer_temperatures": temps_map,
+                "predicted_peak_temp": peak_temp,
+                "predicted_peak_transformer": peak_xfmr,
+                "predicted_temp_t01": temps_map.get("T01"),
+                "predicted_temp_t04": temps_map.get("T04"),
+                "predicted_temp_t02": temps_map.get("T02"),
+                "predicted_temp_t05": temps_map.get("T05"),
+                "predicted_temp_t03": temps_map.get("T03"),
                 "critical_load_service": eval_res.critical_load_service_pct,
+                "critical_hospital_service_pct": hosp_service,
             })
 
             # Check 1: Simulator rejected action validity (e.g. tripped tie line or secondary overload)

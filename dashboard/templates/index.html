@@ -51,17 +51,16 @@
 
     <!-- Operator Auth Selector & Controls -->
     <div class="controls-strip">
-      <div class="auth-selector-wrapper">
-        <label for="auth-role-select" class="control-label">OPERATOR:</label>
-        <select id="auth-role-select" class="auth-select">
-          <option value="gm-lead-token-secret" selected>operator_alice (Lead Operator)</option>
-          <option value="gm-operator-token-secret">operator_bob (Operator)</option>
-          <option value="gm-viewer-token-secret">viewer_charlie (Viewer / Read-Only)</option>
-          <option value="">unauthenticated (No Token)</option>
-        </select>
+      <div class="auth-session-badge" id="auth-session-badge" title="Click to manage operator session token">
+        <span class="auth-dot" id="auth-status-dot"></span>
+        <span class="auth-role-label" id="auth-session-label">SESSION: AUTHENTICATED</span>
       </div>
 
-      <button id="btn-diagnostics-modal" class="btn-action btn-secondary" title="View System Connections and Diagnostics">
+      <button id="btn-auth-modal" class="btn-action btn-secondary" title="Configure Operator Authorization Key">
+        🔑 Operator Key
+      </button>
+
+      <button id="btn-diagnostics-modal" class="btn-action btn-secondary" title="View Verified System Connections and Diagnostics">
         🔧 Diagnostics
       </button>
 
@@ -119,7 +118,7 @@
     </div>
   </div>
 
-  <!-- Hero Incident & Primary Violation Alert Banner (Shown on Active Incident) -->
+  <!-- Hero Incident & Primary Breach Alert Banner (Rendered on Active Incident) -->
   <div id="hero-incident-banner" class="hero-alert-banner" style="display: none;"></div>
 
   <!-- 9-Stage Agent Observability Pipeline Visualizer -->
@@ -470,6 +469,28 @@
     </div>
 
   </main>
+
+  <!-- Operator Authorization Key Modal -->
+  <div id="auth-modal" class="modal-overlay" style="display: none;">
+    <div class="modal-card" style="max-width: 480px;">
+      <div class="modal-header">
+        <div class="modal-title">🔑 Operator Authorization Key</div>
+        <button id="btn-close-auth" class="modal-close-btn">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p style="font-size: 11px; color: var(--text-secondary); margin-bottom: 12px;">
+          Enter your authorized Bearer token to execute state-changing actions and sign off on incident plans.
+        </p>
+        <div style="display: flex; flex-direction: column; gap: 8px;">
+          <input type="password" id="input-auth-token" placeholder="Bearer Token (e.g. operator secret)" style="background: rgba(0,0,0,0.5); border: 1px solid var(--border-subtle); color: #fff; padding: 8px 12px; border-radius: 4px; font-family: var(--font-mono); font-size: 11px; width: 100%;">
+          <div style="display: flex; gap: 8px; justify-content: flex-end; margin-top: 6px;">
+            <button id="btn-clear-auth" class="btn-action btn-secondary" style="padding: 5px 12px; font-size: 11px;">Clear</button>
+            <button id="btn-save-auth" class="btn-action btn-primary" style="padding: 5px 12px; font-size: 11px;">Save Session Key</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <!-- System Connection & Diagnostics Modal -->
   <div id="diagnostics-modal" class="modal-overlay" style="display: none;">

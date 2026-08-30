@@ -546,28 +546,39 @@ def create_dashboard_app(
         })
 
     @app.get("/api/diagnostics")
-    async def get_diagnostics():
-        """Returns verified real system connectivity, MCP tools, and storage diagnostics."""
-        tools = await mcp_server.list_tools()
+    async def get_diagnostics(
+        user: AuthenticatedUser = Depends(require_role("viewer")),
+    ):
+        """
+        Returns verified real system connectivity, MCP tools, and storage diagnostics.
+        Protected: Requires authenticated operator session (viewer, operator, or operator_lead).
+        Security: Does not expose server filesystem paths, secrets, or internal deployment directories.
+        """
+        tools = (await mcp_server.list_tools()) if mount_mcp else []
         active_sc = app_service.active_scenario_id
         latest_rec = app_audit_store.get_latest(scenario_id=active_sc)
         total_recs = app_audit_store.count()
+
+        mcp_info = {
+            "status": "online" if mount_mcp else "not_mounted",
+            "transports": ["streamable-http", "sse"] if mount_mcp else [],
+            "endpoints": {
+                "streamable_http": "/mcp",
+                "sse": "/sse",
+                "messages": "/messages",
+            } if mount_mcp else {},
+            "tools_count": len(tools),
+            "tools": [t.name for t in tools],
+        }
+
         return JSONResponse({
             "status": "healthy",
             "service": "gridmind-unified",
+            "operator": user.username,
+            "role": user.role,
             "active_scenario": active_sc,
             "state_revision": app_service.get_state_revision(),
-            "mcp": {
-                "status": "online",
-                "transports": ["streamable-http", "sse"],
-                "endpoints": {
-                    "streamable_http": "/mcp",
-                    "sse": "/sse",
-                    "messages": "/messages",
-                },
-                "tools_count": len(tools),
-                "tools": [t.name for t in tools],
-            },
+            "mcp": mcp_info,
             "commander": {
                 "status": "ready",
                 "shared_service": True,
@@ -576,7 +587,7 @@ def create_dashboard_app(
             },
             "audit_store": {
                 "status": "connected",
-                "db_path": app_audit_store.db_path,
+                "storage_type": "sqlite_wal",
                 "total_records": total_recs,
                 "latest_incident_id": latest_rec["incident_id"] if latest_rec else None,
                 "latest_status": latest_rec["status"] if latest_rec else "NOMINAL",
