@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import asynccontextmanager
+import os
 from typing import Any, Optional
 import uvicorn
 from starlette.applications import Starlette
@@ -124,20 +125,23 @@ def run_http_server(
 
 def main() -> None:
     """CLI entrypoint for running the GridMind MCP HTTP server."""
+    env_host = os.environ.get("HOST", "127.0.0.1")
+    env_port = int(os.environ.get("PORT", os.environ.get("MCP_PORT", "8000")))
+
     parser = argparse.ArgumentParser(
         description="Run GridMind MCP Server over HTTP (Streamable HTTP & SSE for TrueForge)"
     )
     parser.add_argument(
         "--host",
         type=str,
-        default="127.0.0.1",
-        help="Host interface to bind to (default: 127.0.0.1)",
+        default=env_host,
+        help=f"Host interface to bind to (default: {env_host})",
     )
     parser.add_argument(
         "--port",
         type=int,
-        default=8000,
-        help="Port to listen on (default: 8000)",
+        default=env_port,
+        help=f"Port to listen on (default: {env_port})",
     )
     parser.add_argument(
         "--data-dir",

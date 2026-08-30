@@ -8,7 +8,7 @@ import os
 import tempfile
 import unittest
 from typing import Any, Optional
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from gridmind.audit_store import AuditStore
 from gridmind.commander import (
@@ -702,6 +702,48 @@ class TestGridMindCommander(unittest.TestCase):
         saved = self.audit_store.get("INC-NOMINAL-01")
         self.assertIsNotNone(saved)
         self.assertEqual(saved["status"], AuditRecordStatus.NOMINAL.value)
+
+    def test_23_provider_endpoint_matching_and_trueforge_validation(self) -> None:
+        """Tests that LLMClient correctly binds credentials to provider base URLs and models without cross-provider leakage."""
+        with patch.dict(os.environ, {}, clear=True):
+            # 1. OpenRouter defaults
+            with patch.dict(os.environ, {"OPENROUTER_API_KEY": "sk-or-v1-test"}):
+                client_or = LLMClient()
+                self.assertEqual(client_or.api_key, "sk-or-v1-test")
+                self.assertEqual(client_or.base_url, "https://openrouter.ai/api/v1")
+                self.assertEqual(client_or.model, "openrouter/free")
+
+            # 2. OpenAI defaults when OPENAI_API_KEY is configured
+            with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-openai-test"}):
+                client_oa = LLMClient()
+                self.assertEqual(client_oa.api_key, "sk-openai-test")
+                self.assertEqual(client_oa.base_url, "https://api.openai.com/v1")
+                self.assertEqual(client_oa.model, "gpt-4o-mini")
+
+            # 3. TrueForge without explicit LLM_BASE_URL raises clear configuration ValueError
+            with patch.dict(os.environ, {"TRUEFORGE_API_KEY": "tf-key-test"}):
+                with self.assertRaises(ValueError) as ctx:
+                    LLMClient()
+                self.assertIn("LLM_BASE_URL", str(ctx.exception))
+                self.assertIn("TrueForge", str(ctx.exception))
+
+            # 4. TrueForge with explicit LLM_BASE_URL succeeds
+            with patch.dict(os.environ, {"TRUEFORGE_API_KEY": "tf-key-test", "LLM_BASE_URL": "https://proxy.trueforge.ai/v1"}):
+                client_tf = LLMClient()
+                self.assertEqual(client_tf.api_key, "tf-key-test")
+                self.assertEqual(client_tf.base_url, "https://proxy.trueforge.ai/v1")
+
+    def test_24_audit_store_wal_and_synchronous_full_durability(self) -> None:
+        """Tests that AuditStore connections enforce WAL mode and synchronous=FULL for ACID audit durability."""
+        conn = self.audit_store._get_connection()
+        try:
+            journal_mode = conn.execute("PRAGMA journal_mode;").fetchone()[0]
+            synchronous = conn.execute("PRAGMA synchronous;").fetchone()[0]
+            self.assertEqual(journal_mode.lower(), "wal")
+            # SQLite PRAGMA synchronous returns 2 for FULL
+            self.assertEqual(synchronous, 2)
+        finally:
+            conn.close()
 
 
 if __name__ == "__main__":
