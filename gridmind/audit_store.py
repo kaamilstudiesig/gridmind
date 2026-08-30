@@ -199,6 +199,48 @@ class AuditStore:
             conn.commit()
             return cursor.rowcount == 1
 
+    def invalidate_stale_pending_records(
+        self,
+        active_scenario_id: str,
+        current_state_revision: str,
+        exclude_incident_id: Optional[str] = None,
+    ) -> int:
+        """
+        Atomically transitions all obsolete PENDING_APPROVAL records to STALE_STATE
+        if their scenario_id != active_scenario_id OR state_revision != current_state_revision.
+        Preserves all historical records while preventing execution of obsolete plans.
+        Returns the number of invalidated records.
+        """
+        now_iso = datetime.now(timezone.utc).isoformat()
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                "SELECT incident_id, record_json FROM audit_records WHERE status = 'PENDING_APPROVAL'"
+            )
+            rows = cursor.fetchall()
+            invalidated_count = 0
+            for row in rows:
+                inc_id = row["incident_id"]
+                if exclude_incident_id and inc_id == exclude_incident_id:
+                    continue
+                rec_dict = json.loads(row["record_json"])
+                rec_scenario = rec_dict.get("scenario_id")
+                rec_revision = rec_dict.get("state_revision")
+                if rec_scenario != active_scenario_id or rec_revision != current_state_revision:
+                    rec_dict["status"] = "STALE_STATE"
+                    rec_dict["updated_at"] = now_iso
+                    new_json = json.dumps(rec_dict, ensure_ascii=False)
+                    conn.execute(
+                        """
+                        UPDATE audit_records
+                        SET status = 'STALE_STATE', record_json = ?, updated_at = ?
+                        WHERE incident_id = ? AND status = 'PENDING_APPROVAL';
+                        """,
+                        (new_json, now_iso, inc_id),
+                    )
+                    invalidated_count += 1
+            conn.commit()
+            return invalidated_count
+
     def clear(self) -> None:
         """Clears all records from the audit database (used in testing)."""
         with self._get_connection() as conn:

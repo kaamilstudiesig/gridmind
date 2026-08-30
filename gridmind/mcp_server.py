@@ -238,12 +238,43 @@ class GridMindMCPServer:
         audit_store: Optional[AuditStore] = None,
         data_dir: str = "gridmind_data/curated",
     ) -> None:
-        self.service = service or GridMindService(data_dir=data_dir)
-        self.audit_store = audit_store or (commander.audit_store if commander else AuditStore())
-        self.commander = commander or GridMindCommander(
-            service=self.service,
-            audit_store=self.audit_store,
-        )
+        # Dependency Invariant 1: AuditStore resolution and validation
+        if commander is not None and audit_store is not None:
+            if commander.audit_store is not audit_store:
+                raise ValueError(
+                    "Dependency mismatch: Injected 'commander.audit_store' must be the exact same instance as injected 'audit_store'."
+                )
+            self.audit_store = audit_store
+        elif commander is not None:
+            self.audit_store = commander.audit_store
+        elif audit_store is not None:
+            self.audit_store = audit_store
+        else:
+            self.audit_store = AuditStore()
+
+        # Dependency Invariant 2: GridMindService resolution and validation
+        if commander is not None and service is not None:
+            if commander.service is not service:
+                raise ValueError(
+                    "Dependency mismatch: Injected 'commander.service' must be the exact same instance as injected 'service'."
+                )
+            self.service = service
+        elif commander is not None:
+            self.service = commander.service
+        elif service is not None:
+            self.service = service
+        else:
+            self.service = GridMindService(data_dir=data_dir)
+
+        # Dependency Invariant 3: Commander resolution
+        if commander is not None:
+            self.commander = commander
+        else:
+            self.commander = GridMindCommander(
+                service=self.service,
+                audit_store=self.audit_store,
+            )
+
         self.server = MCPServer("gridmind-mcp")
         self._register_tools()
 
@@ -343,7 +374,11 @@ class GridMindMCPServer:
         # Tool 4: execute_action (Commander Authorization Gated)
         @self.server.tool(
             name="execute_action",
-            description="Live execution of an approved action on the active GridState. Requires prior multi-specialist planning and PENDING_APPROVAL status on the current state revision. Mutates live state and returns structured execution response.",
+            description=(
+                "Live execution of an approved action on the active GridState. Requires prior multi-specialist planning, "
+                "PENDING_APPROVAL status, trusted human operator authorization, and state revision match. "
+                "Mutates live state and returns structured execution response."
+            ),
             annotations=DESTRUCTIVE_ANNOTATIONS,
         )
         async def execute_action(
@@ -411,40 +446,20 @@ class GridMindMCPServer:
                     "error_message": err,
                 }
 
-            # 1. Look up eligible PENDING_APPROVAL record for active scenario
+            # 1. Invalidate all obsolete pending records across the system
             active_sc = service.active_scenario_id
+            current_rev = service.get_state_revision()
+            commander.audit_store.invalidate_stale_pending_records(
+                active_scenario_id=active_sc,
+                current_state_revision=current_rev,
+            )
+
+            # 2. Look up eligible PENDING_APPROVAL record for active scenario
             pending_dict = commander.audit_store.get_pending_for_scenario(active_sc)
             if not pending_dict:
-                # Check if there is an orphaned/stale pending record from another scenario
-                other_pending = commander.audit_store.list(status=AuditRecordStatus.PENDING_APPROVAL.value)
-                if other_pending:
-                    stale_dict = other_pending[0]
-                    stale_rec = AuditRecord(**stale_dict)
-                    stale_rec.status = AuditRecordStatus.STALE_STATE.value
-                    commander.audit_store.save(stale_rec)
-                    current_rev = service.get_state_revision()
-                    err_msg = (
-                        f"STALE_STATE: Active scenario changed from '{stale_dict.get('scenario_id')}' to '{active_sc}' "
-                        f"and grid state changed since planning (was {stale_dict.get('state_revision')}, now {current_rev}). "
-                        f"Re-plan required."
-                    )
-                    return {
-                        "success": False,
-                        "action_applied": action_type,
-                        "is_stable": cur_state.is_stable if cur_state else False,
-                        "violations": cur_viols,
-                        "frequency_hz": freq,
-                        "total_demand_kw": total_kw,
-                        "line_loadings_pct": line_loadings,
-                        "transformer_temperatures_c": trans_temps,
-                        "critical_load_service_pct": crit_service,
-                        "summary": f"Action execution rejected: {err_msg}",
-                        "error_message": err_msg,
-                    }
-
                 err_msg = (
                     f"APPROVAL_REQUIRED: No incident in PENDING_APPROVAL status for active scenario '{active_sc}'. "
-                    f"Commander multi-specialist planning and authorization required before live execution."
+                    f"Commander multi-specialist planning and explicit human operator authorization required before live execution."
                 )
                 return {
                     "success": False,
@@ -460,7 +475,7 @@ class GridMindMCPServer:
                     "error_message": err_msg,
                 }
 
-            # 2. Validate action_type and parameters match the recommended action
+            # 3. Validate action_type and parameters match the recommended action
             rec_action = pending_dict.get("recommended_action") or {}
             rec_type = rec_action.get("action_type", "")
             norm_req_params = _normalize_action_parameters(action_type, validated_params)
@@ -485,15 +500,14 @@ class GridMindMCPServer:
                     "error_message": err_msg,
                 }
 
-            # 3. State-revision revalidation
-            current_revision = service.get_state_revision()
+            # 4. State-revision revalidation
             expected_revision = pending_dict.get("state_revision", "")
-            if current_revision != expected_revision:
+            if current_rev != expected_revision:
                 stale_rec = AuditRecord(**pending_dict)
                 stale_rec.status = AuditRecordStatus.STALE_STATE.value
                 commander.audit_store.save(stale_rec)
                 err_msg = (
-                    f"STALE_STATE: Grid state changed since planning (was {expected_revision}, now {current_revision}). "
+                    f"STALE_STATE: Grid state changed since planning (was {expected_revision}, now {current_rev}). "
                     f"Re-plan required."
                 )
                 return {
@@ -510,15 +524,40 @@ class GridMindMCPServer:
                     "error_message": err_msg,
                 }
 
-            # 4. Delegate through Commander for atomic claim, execution, verification, and audit persistence
-            try:
-                approval_payload = {
-                    "approved": True,
-                    "approved_by": "mcp_operator_authorized",
-                    "reason": "Authorized via Commander MCP execution gate",
+            # 5. Trusted Human Operator Authorization Verification (Finding 1)
+            # Fails closed if no real human operator authorization exists in the AuditRecord context.
+            existing_approval = pending_dict.get("approval")
+            has_human_approval = (
+                isinstance(existing_approval, dict)
+                and existing_approval.get("approved") is True
+                and bool(existing_approval.get("approved_by"))
+                and existing_approval.get("approved_by") != "mcp_operator_authorized"
+            )
+
+            if not has_human_approval:
+                err_msg = (
+                    f"APPROVAL_REQUIRED: Incident '{pending_dict['incident_id']}' is in PENDING_APPROVAL status but has not been "
+                    f"authorized by an authenticated human operator. Explicit human authorization via the control center dashboard "
+                    f"or authorization workflow is required before live execution."
+                )
+                return {
+                    "success": False,
+                    "action_applied": action_type,
+                    "is_stable": cur_state.is_stable if cur_state else False,
+                    "violations": cur_viols,
+                    "frequency_hz": freq,
+                    "total_demand_kw": total_kw,
+                    "line_loadings_pct": line_loadings,
+                    "transformer_temperatures_c": trans_temps,
+                    "critical_load_service_pct": crit_service,
+                    "summary": f"Action execution rejected: {err_msg}",
+                    "error_message": err_msg,
                 }
+
+            # 6. Delegate through Commander for atomic claim, execution, verification, and audit persistence
+            try:
                 audit_rec = commander.approve_and_execute(
-                    approval=approval_payload,
+                    approval=existing_approval,
                     incident_id=pending_dict["incident_id"],
                 )
                 exec_data = audit_rec.execution
@@ -583,6 +622,11 @@ class GridMindMCPServer:
         ) -> dict[str, Any]:
             try:
                 resp = service.load_scenario(scenario_id)
+                # Invalidate all obsolete pending records across the system
+                commander.audit_store.invalidate_stale_pending_records(
+                    active_scenario_id=service.active_scenario_id,
+                    current_state_revision=service.get_state_revision(),
+                )
                 return resp.to_dict()
             except ValueError as err:
                 return {

@@ -341,6 +341,35 @@ class GridMindCommander:
             audit_record=record,
         )
 
+    def authorize_plan(
+        self,
+        incident_id: str,
+        approved_by: str,
+        reason: Optional[str] = None,
+    ) -> AuditRecord:
+        """
+        Records human operator authorization for a pending incident plan without immediately dispatching execution.
+        Establishes a trusted human approval context in the AuditStore for subsequent execution dispatch.
+        """
+        raw_rec = self.audit_store.get(incident_id)
+        if not raw_rec:
+            raise ValueError(f"No AuditRecord found for incident_id '{incident_id}'")
+        record = AuditRecord(**raw_rec)
+        if record.status != AuditRecordStatus.PENDING_APPROVAL.value:
+            raise ValueError(
+                f"Cannot authorize record with status '{record.status}'; expected '{AuditRecordStatus.PENDING_APPROVAL.value}'"
+            )
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        record.approval = {
+            "approved": True,
+            "approved_by": str(approved_by),
+            "reason": reason or "Authorized by control room operator",
+            "timestamp": now_iso,
+        }
+        self.audit_store.save(record)
+        return record
+
     def approve_and_execute(
         self,
         approval: dict[str, Any],
