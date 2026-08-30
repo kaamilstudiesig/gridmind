@@ -35,7 +35,7 @@ from gridmind.models import (
 )
 
 
-SUPPORTED_SCENARIOS = frozenset({"SC01", "SC01-B", "SC01_B", "BASE"})
+SUPPORTED_SCENARIOS = frozenset({"SC01", "SC01-B", "SC01_B", "SC02", "BASE"})
 
 
 class GridMindService:
@@ -62,16 +62,18 @@ class GridMindService:
         Initializes or resets the simulator to a specific scenario state.
         For SC01: applies heatwave environment, trips L08, and spikes N08.
         For SC01-B: applies heatwave environment and spikes N08 with L08 operational.
+        For SC02: applies storm environment and spikes N07 residential load with L08 operational.
         Rejects unsupported scenario IDs before mutating live state.
         """
         clean_id = scenario_id.strip()
         norm_id = clean_id.upper().replace("_", "-")
-        if norm_id not in ("SC01", "SC01-B", "BASE") and clean_id not in SUPPORTED_SCENARIOS:
+        valid_ids = {"SC01", "SC01-B", "SC02", "BASE"}
+        if norm_id not in valid_ids and clean_id not in SUPPORTED_SCENARIOS:
             raise ValueError(
                 f"Unsupported scenario ID '{scenario_id}'. Supported scenarios: {sorted(SUPPORTED_SCENARIOS)}"
             )
 
-        canonical_id = {"SC01": "SC01", "SC01-B": "SC01-B", "BASE": "BASE"}.get(norm_id, clean_id)
+        canonical_id = {"SC01": "SC01", "SC01-B": "SC01-B", "SC02": "SC02", "BASE": "BASE"}.get(norm_id, clean_id)
 
         self.state = load_curated_grid(self.data_dir)
         self.active_scenario_id = canonical_id
@@ -100,6 +102,24 @@ class GridMindService:
                 IncidentEvent(
                     event_type="demand_spike",
                     parameters={"target": "N08", "increase_pct": 12.0},
+                ),
+            )
+
+        elif canonical_id == "SC02":
+            # 1. Storm environment
+            self.engine.apply_event(
+                self.state,
+                IncidentEvent(
+                    event_type="environment",
+                    parameters={"ambient_temp_c": 28.0, "demand_multiplier": 1.15, "storm": True},
+                ),
+            )
+            # 2. Severe residential demand surge on N07 (+50%)
+            self.engine.apply_event(
+                self.state,
+                IncidentEvent(
+                    event_type="demand_spike",
+                    parameters={"target": "N07", "increase_pct": 50.0},
                 ),
             )
 

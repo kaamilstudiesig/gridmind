@@ -96,39 +96,132 @@ class OperationsSpecialist:
                 recommendation=rec,
             )
 
+# Transformer-to-feeder topology mapping
+TRANSFORMER_FEEDER_MAP: dict[str, str] = {
+    "T01": "N04",
+    "T05": "N04",
+    "T02": "N05",
+    "T04": "N05",
+    "T03": "N06",
+}
+
+# Feeder-to-curtailable-load-zone mapping (non-critical load zones)
+FEEDER_CURTAILABLE_LOAD_MAP: dict[str, str] = {
+    "N04": "N07",  # Feeder-A -> Residential-A (LZ01)
+    "N05": "N08",  # Feeder-B -> Commercial-A (LZ02); LZ04 at N10 is critical
+    "N06": "N09",  # Feeder-C -> Industrial-A (LZ03)
+}
+
+# Feeder tie-line adjacent destinations
+FEEDER_TIE_LINE_DESTINATIONS: dict[str, dict[str, str]] = {
+    "N04": {"line_id": "L08", "destination": "N05"},
+    "N05": {"line_id": "L08", "destination": "N04"},
+}
+
+
+class OperationsSpecialist:
+    """
+    Operations Specialist:
+    - Inspects active incident state and live grid telemetry.
+    - Proposes at most 3 plausible candidate actions mapping directly to MCP actions.
+    - Dynamically resolves affected assets, feeder routing, and curtailable load zones from telemetry.
+    - Synthesizes findings and recommendations via LLMClient.
+    - Does NOT execute actions.
+    - Enforces MAX_CANDIDATES = 3.
+    """
+    MAX_CANDIDATES: int = 3
+
+    def __init__(self, llm_client: Optional[LLMClient] = None) -> None:
+        self.llm_client = llm_client or LLMClient()
+
+    def analyze(
+        self,
+        incident_state: IncidentStateResponse,
+        grid_state: Optional[GridStateResponse] = None,
+    ) -> SpecialistResult:
+        evidence: list[Any] = []
+        evidence.append({
+            "scenario_id": incident_state.scenario_id,
+            "is_stable": incident_state.is_stable,
+            "frequency_hz": incident_state.frequency_hz,
+            "ambient_temp_c": incident_state.ambient_temp_c,
+            "tripped_lines": list(incident_state.tripped_lines),
+            "overheated_transformers": list(incident_state.overheated_transformers),
+            "active_violations": [v.description for v in incident_state.active_violations],
+        })
+
+        if incident_state.is_stable and not incident_state.active_violations:
+            default_finding = "Grid operating in nominal stable state. Zero violations detected."
+            default_rec = "Continue normal baseline monitoring."
+            finding, rec = self.llm_client.generate_narrative(
+                agent_role=SpecialistRole.OPERATIONS.value,
+                status=SpecialistStatus.ACCEPT.value,
+                candidates=[],
+                evidence=evidence,
+                risks=[],
+                default_finding=default_finding,
+                default_recommendation=default_rec,
+            )
+            return SpecialistResult(
+                agent=SpecialistRole.OPERATIONS.value,
+                status=SpecialistStatus.ACCEPT.value,
+                candidates=[],
+                finding=finding,
+                evidence=evidence,
+                risks=[],
+                recommendation=rec,
+            )
+
         candidates: list[dict[str, Any]] = []
         risks: list[str] = []
 
-        # Identify candidate actions based on active incident telemetry
-        if "T04" in incident_state.overheated_transformers or any(
-            "T04" in v.description for v in incident_state.active_violations
-        ):
-            # Candidate 1: Immediate demand curtailment on commercial node N08
+        # Identify all overheated / violated transformers from telemetry (not hardcoded scenario_id)
+        overheated_set = set(incident_state.overheated_transformers)
+        for v in incident_state.active_violations:
+            if v.violation_type == "TRANSFORMER_OVERHEAT" and v.target_id:
+                overheated_set.add(v.target_id)
+            elif "T01" in v.description:
+                overheated_set.add("T01")
+            elif "T04" in v.description:
+                overheated_set.add("T04")
+            elif "T02" in v.description:
+                overheated_set.add("T02")
+            elif "T05" in v.description:
+                overheated_set.add("T05")
+
+        if overheated_set:
+            primary_xfmr = sorted(list(overheated_set))[0]
+            feeder_node = TRANSFORMER_FEEDER_MAP.get(primary_xfmr, "N05")
+            load_target = FEEDER_CURTAILABLE_LOAD_MAP.get(feeder_node, "N08")
+            tie_info = FEEDER_TIE_LINE_DESTINATIONS.get(feeder_node)
+
+            # Candidate 1: Immediate demand curtailment on the affected feeder's curtailable load zone
             candidates.append({
                 "action_type": "load_restriction",
-                "parameters": {"target": "N08", "reduction_pct": 15.0},
+                "parameters": {"target": load_target, "reduction_pct": 15.0},
             })
 
-            # Candidate 2: Power rerouting across emergency tie-line L08 to Feeder-A
-            candidates.append({
-                "action_type": "load_transfer",
-                "parameters": {
-                    "line_id": "L08",
-                    "source": "N08",
-                    "destination": "N04",
-                    "transfer_mw": 0.100,
-                },
-            })
+            # Candidate 2: Power rerouting across emergency tie-line if available for this feeder
+            if tie_info:
+                candidates.append({
+                    "action_type": "load_transfer",
+                    "parameters": {
+                        "line_id": tie_info["line_id"],
+                        "source": load_target,
+                        "destination": tie_info["destination"],
+                        "transfer_mw": 0.100,
+                    },
+                })
 
-            # Candidate 3: Isolation of overheated unit T04
+            # Candidate 3: Isolation of overheated unit
             candidates.append({
                 "action_type": "isolate_transformer",
-                "parameters": {"transformer_id": "T04"},
+                "parameters": {"transformer_id": primary_xfmr},
             })
 
-            risks.append("T04 thermal runaway risk exceeding 110.0°C maximum limit under peak heatwave.")
-            if "L08" in incident_state.tripped_lines:
-                risks.append("Tie-line L08 is locked out / tripped in incident telemetry; load transfer may be unavailable.")
+            risks.append(f"{primary_xfmr} thermal runaway risk exceeding 110.0°C maximum limit.")
+            if tie_info and tie_info["line_id"] in incident_state.tripped_lines:
+                risks.append(f"Tie-line {tie_info['line_id']} is locked out / tripped in incident telemetry; load transfer may be unavailable.")
 
         # Strict rate-limit guardrail
         if len(candidates) > self.MAX_CANDIDATES:
@@ -197,12 +290,14 @@ class SafetySpecialist:
                 "is_stable": eval_res.is_stable,
                 "rejection_reason": eval_res.rejection_reason,
                 "violations": [v.description for v in eval_res.violations],
+                "predicted_temp_t01": eval_res.predicted_transformer_temperatures_c.get("T01"),
                 "predicted_temp_t04": eval_res.predicted_transformer_temperatures_c.get("T04"),
                 "predicted_temp_t02": eval_res.predicted_transformer_temperatures_c.get("T02"),
+                "predicted_temp_t05": eval_res.predicted_transformer_temperatures_c.get("T05"),
                 "critical_load_service": eval_res.critical_load_service_pct,
             })
 
-            # Check 1: Simulator rejected action validity (e.g. tripped tie line)
+            # Check 1: Simulator rejected action validity (e.g. tripped tie line or secondary overload)
             if not eval_res.action_valid:
                 risks.append(
                     f"Candidate '{act_type}' is invalid: {eval_res.rejection_reason or 'Validation failed'}"
@@ -263,6 +358,7 @@ class PlanningSpecialist:
     """
     Planning Specialist:
     - Identifies longer-term asset remediation and reinforcement work orders.
+    - Dynamically identifies overheated units from incident telemetry.
     - Synthesizes findings and recommendations via LLMClient.
     - Does NOT override immediate safety and does NOT execute actions.
     """
@@ -281,22 +377,37 @@ class PlanningSpecialist:
             "safe_operational_actions": [a.get("action_type") for a in safe_actions],
         }]
 
+        overheated_set = set(incident_state.overheated_transformers)
+        for v in getattr(incident_state, "active_violations", []):
+            if getattr(v, "violation_type", None) == "TRANSFORMER_OVERHEAT" and getattr(v, "target_id", None):
+                overheated_set.add(v.target_id)
+            elif "T01" in getattr(v, "description", ""):
+                overheated_set.add("T01")
+            elif "T04" in getattr(v, "description", ""):
+                overheated_set.add("T04")
+
         planning_candidates: list[dict[str, Any]] = []
-        if "T04" in incident_state.overheated_transformers:
+        for xfmr_id in sorted(list(overheated_set)):
             planning_candidates.append({
                 "action_type": "transformer_replacement",
-                "parameters": {"transformer_id": "T04", "additional_kva": 250.0},
+                "parameters": {"transformer_id": xfmr_id, "additional_kva": 250.0},
             })
 
-        default_finding = (
-            "Recommended long-term planning work order: uprate/replace T04 (+250 kVA) to provide 500 kVA capacity."
-        )
-        risks = [
-            "Planning work orders require capital equipment procurement and crew scheduling; they do not clear real-time thermal overloads immediately."
-        ]
-        default_rec = (
-            "Queue planning work order for T04 uprate after resolving immediate operational constraints."
-        )
+        if overheated_set:
+            xfmr_names = ", ".join(sorted(list(overheated_set)))
+            default_finding = (
+                f"Recommended long-term planning work order: uprate/replace {xfmr_names} (+250 kVA) to provide expanded capacity."
+            )
+            risks = [
+                "Planning work orders require capital equipment procurement and crew scheduling; they do not clear real-time thermal overloads immediately."
+            ]
+            default_rec = (
+                f"Queue planning work order for {xfmr_names} uprate after resolving immediate operational constraints."
+            )
+        else:
+            default_finding = "Zero transformer thermal overloads detected. No immediate replacement work order needed."
+            risks = []
+            default_rec = "Maintain standard planning inspection intervals."
 
         finding, rec = self.llm_client.generate_narrative(
             agent_role=SpecialistRole.PLANNING.value,
