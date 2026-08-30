@@ -36,6 +36,7 @@ logger = logging.getLogger("gridmind.dashboard")
 BASE_DIR = Path(__file__).resolve().parent
 TEMPLATES_DIR = BASE_DIR / "templates"
 STATIC_DIR = BASE_DIR / "static"
+LANDING_DIR = BASE_DIR.parent / "landing"
 
 
 # ==============================================================================
@@ -398,12 +399,32 @@ def create_dashboard_app(
         async with mcp_server.session_manager.run():
             yield
 
+    last_mcp_activity_at: Optional[str] = None
+
+    def get_active_mcp_sessions_count() -> int:
+        if not mount_mcp:
+            return 0
+        sm = getattr(mcp_server, "session_manager", None)
+        if sm is None:
+            return 0
+        instances = getattr(sm, "_server_instances", {})
+        return len(instances)
+
     app = FastAPI(
         title="GridMind Command Center",
         description="Operational command-center and observability dashboard for GridMind Agentic Orchestration",
         version="0.1.0",
         lifespan=app_lifespan if mount_mcp else None,
     )
+
+    @app.middleware("http")
+    async def track_mcp_activity(request: Request, call_next):
+        nonlocal last_mcp_activity_at
+        path = request.url.path
+        if path in ("/mcp", "/sse", "/messages") or path.startswith(("/mcp/", "/sse/", "/messages/")):
+            last_mcp_activity_at = datetime.now(timezone.utc).isoformat()
+        response = await call_next(request)
+        return response
 
     if mount_mcp:
         for route in streamable_app.routes:
@@ -418,6 +439,8 @@ def create_dashboard_app(
     (STATIC_DIR / "js").mkdir(parents=True, exist_ok=True)
 
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+    if LANDING_DIR.exists():
+        app.mount("/landing", StaticFiles(directory=LANDING_DIR, html=True), name="landing")
     templates = Jinja2Templates(directory=TEMPLATES_DIR)
 
     @app.get("/health")
@@ -474,6 +497,7 @@ def create_dashboard_app(
         # Retrieve latest record for active scenario efficiently
         latest_record = app_audit_store.get_latest(scenario_id=active_sc)
         total_count = app_audit_store.count()
+        active_sessions = get_active_mcp_sessions_count()
 
         return JSONResponse({
             "scenario_id": active_sc,
@@ -483,6 +507,12 @@ def create_dashboard_app(
             "latest_record": latest_record,
             "total_audit_records": total_count,
             "commander_status": latest_record.get("status") if latest_record else "NOMINAL",
+            "mcp": {
+                "status": "online" if mount_mcp else "not_mounted",
+                "active_sessions": active_sessions,
+                "tools_count": 7 if mount_mcp else 0,
+                "last_mcp_activity_at": last_mcp_activity_at,
+            },
         })
 
     @app.get("/api/events/{incident_id}")
@@ -558,6 +588,7 @@ def create_dashboard_app(
         active_sc = app_service.active_scenario_id
         latest_rec = app_audit_store.get_latest(scenario_id=active_sc)
         total_recs = app_audit_store.count()
+        active_sessions = get_active_mcp_sessions_count()
 
         mcp_info = {
             "status": "online" if mount_mcp else "not_mounted",
@@ -569,6 +600,9 @@ def create_dashboard_app(
             } if mount_mcp else {},
             "tools_count": len(tools),
             "tools": [t.name for t in tools],
+            "active_sessions": active_sessions,
+            "last_tool_call_at": latest_rec.get("created_at") if latest_rec else None,
+            "last_mcp_activity_at": last_mcp_activity_at,
         }
 
         return JSONResponse({
