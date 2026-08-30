@@ -180,19 +180,19 @@ Open `http://127.0.0.1:8080` in your browser. Default operator credentials:
 ## Demo Walkthrough: Scenarios & Incident Lifecycle
 
 ### Scenario 1: `SC01` — Summer Heatwave with Damaged Tie-Line
-1. **Initial Telemetry**: Ambient temperature is $38.5^\circ\text{C}$ with high commercial demand ($1.25\times$). Transformer `T04` overheats to $112.5^\circ\text{C}$ (limit: $110.0^\circ\text{C}$). Tie-line `L08` is `TRIPPED` and unavailable.
+1. **Initial Telemetry**: Ambient temperature is $34.0^\circ\text{C}$ with elevated commercial demand ($1.25\times$). Transformer `T04` overheats to $112.65^\circ\text{C}$ (limit: $110.0^\circ\text{C}$). Tie-line `L08` is `TRIPPED` and unavailable.
 2. **Specialist Evaluation**:
    - Operations suggests `load_transfer` via `L08`.
    - Safety Specialist **rejects** `load_transfer` because `L08` is physically damaged (`TRIPPED`).
-   - Safety evaluates `load_restriction` on commercial node `N08` at $15\%$ and confirms it cools `T04` to $107.5^\circ\text{C}$ while preserving $100\%$ power to critical hospital `LZ04`.
-3. **Approval & Execution**: Commander selects $15\%$ curtailment at `N08`, saves record `INC-XXXXXXXX` in `PENDING_APPROVAL`. The operator signs off on the dashboard, live execution completes, and the grid recovers to stable nominal frequency ($50.00\text{ Hz}$).
+   - Safety evaluates `load_restriction` on commercial node `N08` at $15\%$ and confirms it cools `T04` to $97.55^\circ\text{C}$ while preserving $100\%$ power to critical hospital `LZ04`.
+3. **Approval & Execution**: Commander selects $15\%$ curtailment at `N08`, saves record `INC-XXXXXXXX` in `PENDING_APPROVAL`. The operator signs off on the dashboard, live execution completes, and the grid recovers to stable nominal frequency ($49.95\text{ Hz}$).
 
 ### Scenario 2: `SC01-B` — Operational Tie-Line & Disruption Minimization
-1. **Initial Telemetry**: Same heatwave condition, but tie-line `L08` is healthy and operational (`OPEN`).
+1. **Initial Telemetry**: Same heatwave condition ($34.0^\circ\text{C}$, $1.25\times$ demand, `T04` at $112.65^\circ\text{C}$), but tie-line `L08` is healthy and operational (`OPEN`).
 2. **Specialist Evaluation**:
    - Safety accepts both `load_transfer` ($100\text{ kW}$ from Feeder-B `N08` to Feeder-A `N04`) and `load_restriction` ($15\%$).
    - Commander's **deterministic tie-breaking rule** selects `load_transfer` because rerouting power over tie-lines causes $0\%$ customer power curtailment versus dropping load.
-3. **Result**: Grid achieves full thermal stability without curtailing a single kilowatt of consumer load.
+3. **Result**: Grid achieves full thermal stability (`T04` cools to $95.32^\circ\text{C}$) without curtailing a single kilowatt of consumer load ($100\%$ hospital power maintained).
 
 ### Scenario 3: `SC02` — Severe Storm & Secondary Overload Prevention
 1. **Initial Telemetry**: Residential storm incident with ambient temperature $28.0^\circ\text{C}$, $1.15\times$ base demand, and $+50\%$ demand spike on residential node `N07`. Feeder-A transformer `T01` overheats to $111.4^\circ\text{C}$.

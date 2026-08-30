@@ -24,7 +24,10 @@ import json
 import sys
 import unittest
 from typing import Any
+from unittest.mock import MagicMock
 
+from gridmind.commander import GridMindCommander
+from gridmind.llm import LLMClient
 from gridmind.mcp_server import (
     DESTRUCTIVE_ANNOTATIONS,
     IDEMPOTENT_MUTATING_ANNOTATIONS,
@@ -39,8 +42,22 @@ class TestMCPServer(unittest.IsolatedAsyncioTestCase):
     """Tests MCP tool registration, schema validation, isolation, and execution."""
 
     async def asyncSetUp(self) -> None:
+        self.mock_llm = MagicMock(spec=LLMClient)
+        self.mock_llm.generate_narrative.side_effect = (
+            lambda agent_role, status, candidates, evidence, risks, default_finding, default_recommendation: (
+                default_finding,
+                default_recommendation,
+            )
+        )
         self.service = GridMindService(data_dir="gridmind_data/curated")
-        self.mcp_wrapper = GridMindMCPServer(service=self.service)
+        self.commander = GridMindCommander(
+            service=self.service,
+            llm_client=self.mock_llm,
+        )
+        self.mcp_wrapper = GridMindMCPServer(
+            service=self.service,
+            commander=self.commander,
+        )
         self.server = self.mcp_wrapper.server
 
     async def _call_tool_json(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:

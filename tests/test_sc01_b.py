@@ -177,8 +177,20 @@ class TestScenarioSC01BMCP(unittest.IsolatedAsyncioTestCase):
     """Tests MCP tool invocation specifically against SC01-B scenario."""
 
     async def asyncSetUp(self) -> None:
+        from unittest.mock import MagicMock
+        from gridmind.llm import LLMClient
+        from gridmind.commander import GridMindCommander
+
+        self.mock_llm = MagicMock(spec=LLMClient)
+        self.mock_llm.generate_narrative.side_effect = (
+            lambda agent_role, status, candidates, evidence, risks, default_finding, default_recommendation: (
+                default_finding,
+                default_recommendation,
+            )
+        )
         self.service = GridMindService(data_dir="gridmind_data/curated")
-        self.mcp_wrapper = GridMindMCPServer(service=self.service)
+        self.commander = GridMindCommander(service=self.service, llm_client=self.mock_llm)
+        self.mcp_wrapper = GridMindMCPServer(service=self.service, commander=self.commander)
         self.server = self.mcp_wrapper.server
 
     async def _call_tool_json(self, tool_name: str, arguments: dict) -> dict:

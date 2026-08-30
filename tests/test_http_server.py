@@ -25,7 +25,11 @@ from mcp.client.session import ClientSession
 from mcp.client.sse import sse_client
 from mcp.client.streamable_http import streamable_http_client
 
+from unittest.mock import MagicMock
+
+from gridmind.commander import GridMindCommander
 from gridmind.http_server import create_http_app
+from gridmind.llm import LLMClient
 from gridmind.mcp_server import GridMindMCPServer
 from gridmind.service import GridMindService
 
@@ -50,8 +54,16 @@ class TestMCPServerHTTP(unittest.IsolatedAsyncioTestCase):
     def setUpClass(cls) -> None:
         cls.test_port = _get_free_port()
         cls.base_url = f"http://127.0.0.1:{cls.test_port}"
+        cls.mock_llm = MagicMock(spec=LLMClient)
+        cls.mock_llm.generate_narrative.side_effect = (
+            lambda agent_role, status, candidates, evidence, risks, default_finding, default_recommendation: (
+                default_finding,
+                default_recommendation,
+            )
+        )
         cls.service = GridMindService(data_dir="gridmind_data/curated")
-        cls.wrapper = GridMindMCPServer(service=cls.service)
+        cls.commander = GridMindCommander(service=cls.service, llm_client=cls.mock_llm)
+        cls.wrapper = GridMindMCPServer(service=cls.service, commander=cls.commander)
         cls.app = create_http_app(wrapper=cls.wrapper)
 
         config = uvicorn.Config(
