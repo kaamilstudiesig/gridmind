@@ -34,37 +34,33 @@ GridMind separates external agent interaction, transport, orchestration, audit p
 
 ```mermaid
 flowchart TD
-    subgraph ClientLayer["AI & Operator Interaction Layer"]
+    subgraph ClientLayer [AI and Operator Interaction Layer]
         TF["TrueForge Agent / MCP Client"]
-        OP["Human Control Room Operator (Dashboard)"]
+        OP["Human Control Room Operator"]
     end
 
-    subgraph TransportLayer["Transport & API Layer"]
-        MCP["GridMind MCP Server\n(Streamable HTTP on :8000/mcp & SSE on :8000/sse)"]
-        DASH["FastAPI Command Center Dashboard\n(REST API & Web UI on :8080)"]
+    subgraph TransportLayer [Transport and API Layer]
+        MCP["GridMind MCP Server<br/>(:8000/mcp and :8000/sse)"]
+        DASH["Command Center Dashboard<br/>(:8080)"]
     end
 
-    subgraph CoreOrchestration["GridMind Core Orchestration"]
-        SVC["GridMindService\n(State Facade & Action Dispatch)"]
-        CMD["GridMindCommander\n(Incident Orchestrator & Approval Gate)"]
-        
-        subgraph Specialists["Domain Roles"]
-            OPS["Operations Role\n(Topology & Tie-Line Routing)"]
-            PLN["Planning Role\n(Asset Capacity & Upgrades)"]
-            SFT["Safety Role\n(Physics & Constraint Validation)"]
-        end
-
-        LLM["LLMClient (OpenRouter / OpenAI / TrueForge Proxy)\n[Narrative Synthesis + [DEGRADED_MODE] Fallback]"]
+    subgraph CoreLayer [GridMind Core Orchestration]
+        SVC["GridMindService<br/>(State Facade)"]
+        CMD["GridMindCommander<br/>(Incident Orchestrator)"]
+        OPS["Operations Role"]
+        PLN["Planning Role"]
+        SFT["Safety Role"]
+        LLM["LLM Narrative Synthesis<br/>(Degraded Mode Fallback)"]
     end
 
-    subgraph SafetyGate["Safety & Audit Boundary"]
-        GATE{"Human-in-the-Loop Gate\n(PENDING_APPROVAL Status)"}
-        STORE[("Durable SQLite AuditStore\ngridmind_audit.db (WAL Mode)")]
+    subgraph SafetyGate [Safety and Audit Boundary]
+        GATE{"Human-in-the-Loop Gate<br/>(PENDING_APPROVAL)"}
+        STORE[("SQLite AuditStore<br/>gridmind_audit.db")]
     end
 
-    subgraph PhysicsLayer["Physical Simulator & Data"]
-        ENG["GridMindEngine\n(Thermal Rise, Droop, Power Flow)"]
-        DATA[("Curated Topology Data\ngridmind_data/curated/")]
+    subgraph PhysicsLayer [Physical Simulation Layer]
+        ENG["GridMindEngine<br/>(Thermal, Droop, Power Flow)"]
+        DATA["Curated Topology Data"]
     end
 
     TF -->|MCP Tool Calls| MCP
@@ -79,14 +75,14 @@ flowchart TD
     CMD --> PLN
     CMD --> SFT
     OPS -->|Candidate Actions| SFT
-    PLN -->|Long-term Work Orders| SFT
+    PLN -->|Work Orders| SFT
     SFT -->|Sandboxed Evaluation| ENG
     CMD --> LLM
 
     CMD -->|1. Generate Plan & Evidence| STORE
     STORE -->|2. PENDING_APPROVAL| GATE
     OP -->|3. Authenticated Sign-Off| GATE
-    GATE -->|4. Atomic Claim & State Revalidation| SVC
+    GATE -->|4. Atomic Claim & Revalidate| SVC
     SVC -->|5. Physical Execution| ENG
     SVC -->|6. Post-Action Verification| STORE
 ```
