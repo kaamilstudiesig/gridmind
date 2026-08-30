@@ -39,13 +39,13 @@ flowchart TD
         OP["Human Control Room Operator"]
     end
 
-    subgraph TransportLayer [Transport and API Layer]
-        MCP["GridMind MCP Server<br/>(:8000/mcp and :8000/sse)"]
-        DASH["Command Center Dashboard<br/>(:8080)"]
+    subgraph TransportLayer [Unified Server on :8080]
+        MCP["Mounted MCP Server<br/>(:8080/mcp and :8080/sse)"]
+        DASH["Command Center Dashboard<br/>(:8080 Web UI & REST API)"]
     end
 
     subgraph CoreLayer [GridMind Core Orchestration]
-        SVC["GridMindService<br/>(State Facade)"]
+        SVC["GridMindService<br/>(Shared State Facade)"]
         CMD["GridMindCommander<br/>(Incident Orchestrator)"]
         OPS["Operations Role"]
         PLN["Planning Role"]
@@ -96,7 +96,7 @@ flowchart TD
    - **Safety Role**: Evaluates every candidate in an isolated sandbox clone of the grid to ensure hard constraints (such as hospital 100% power delivery and secondary transformer thermal limits) are preserved.
 3. **Deterministic Tie-Breaking**: Safe candidates are ranked by disruption-minimization priority (network transfer $\to$ demand curtailment $\to$ branch isolation) and lowest peak transformer temperature.
 4. **Narrative Synthesis**: The LLM client synthesizes concise operator findings and recommendation summaries (with automatic fallback to deterministic templates in `[DEGRADED_MODE]` if API keys are missing).
-5. **Durable Audit Record**: Commander persists an `AuditRecord` with a unique ID (`INC-XXXXXXXX`) in `PENDING_APPROVAL` status into SQLite (`gridmind_audit.db`).
+5. **Durable Audit Record & Status**: Commander records the outcome in SQLite (`gridmind_audit.db`). If an actionable safe intervention is found, the record is placed in `PENDING_APPROVAL` status. If the grid is already stable, it returns `NOMINAL`. If all candidates are unsafe, it returns `NO_SAFE_ACTION`. If automated mitigation is impossible, it returns `ESCALATED`.
 6. **Human Operator Sign-Off**: The human operator inspects the evidence, specialist reasoning, and sandbox metrics on the Command Center Dashboard, providing role-authenticated approval.
 7. **Atomic Claim & State Revalidation**: Before execution, GridMind verifies that the grid state revision hash matches the planned state. If conditions have drifted, execution is refused (`STALE_STATE`). When valid, SQLite atomically claims the record to prevent race conditions.
 8. **Live Execution & Verification**: The action executes on the live simulator, and post-action telemetry is evaluated to confirm grid stabilization (`VERIFIED`).
@@ -118,7 +118,7 @@ GridMind enforces strict operational boundaries:
 
 ## The 7 GridMind MCP Tools
 
-The GridMind MCP server exposes 7 deterministic tools over Streamable HTTP (`:8000/mcp`), Server-Sent Events (`:8000/sse`), and Standard I/O (`stdio`):
+The GridMind MCP server exposes 7 deterministic tools over Streamable HTTP (`:8080/mcp`), Server-Sent Events (`:8080/sse`), and Standard I/O (`stdio`):
 
 | Tool Name | Type | Description |
 | :--- | :--- | :--- |
@@ -128,7 +128,7 @@ The GridMind MCP server exposes 7 deterministic tools over Streamable HTTP (`:80
 | `execute_action` | State-Changing | Executes an intervention on the live simulator (strictly gated by human operator authorization). |
 | `get_last_simulation_result` | Read-Only | Retrieves the most recent simulation response. |
 | `load_scenario` | Idempotent Reset | Resets simulator state to a clean baseline and loads a scenario (`SC01`, `SC01-B`, `SC02`, `BASE`). |
-| `plan_incident_response` | Planning Bridge | Triggers Commander multi-specialist planning, sandboxed safety checks, and creates an authoritative `PENDING_APPROVAL` audit record. |
+| `plan_incident_response` | Planning Bridge | Triggers Commander multi-specialist planning and sandboxed safety checks. Returns `PENDING_APPROVAL` with the recommended action when a safe intervention is found, `NOMINAL` if stable, `NO_SAFE_ACTION` if all candidates fail safety checks, or `ESCALATED` if human escalation is required. |
 
 ---
 
@@ -178,39 +178,50 @@ GridMind supports four provider configurations:
 
 ---
 
-### 4. Start Services
+### 4. Start the Application
 
-GridMind runs as two separate processes:
+#### Option A: Unified Command Center & MCP Server (Recommended)
 
-#### Step A: Start the GridMind MCP Server (Port 8000)
-In your first terminal:
+GridMind provides a unified application server where the FastAPI Web Dashboard and the MCP Server run within the **same Python process**. This ensures TrueForge and the human operator share the exact same in-memory `GridMindService`, `GridMindCommander`, and SQLite `AuditStore` instances:
+
+```bash
+# Start Unified Server on port 8080
+source .venv/bin/activate
+python -m dashboard.app --host 127.0.0.1 --port 8080
+```
+
+- **Web Dashboard**: `http://127.0.0.1:8080/`
+- **Streamable HTTP MCP Transport**: `http://127.0.0.1:8080/mcp`
+- **SSE MCP Transport**: `http://127.0.0.1:8080/sse`
+- **Health & Tool Discovery**: `http://127.0.0.1:8080/health`
+
+#### Option B: Standalone Headless MCP Server (Testing / Headless)
+
+If you only require the MCP server without the web dashboard UI (e.g. for headless script evaluation):
+
 ```bash
 source .venv/bin/activate
 python -m gridmind.http_server --host 127.0.0.1 --port 8000
 ```
-- **Streamable HTTP MCP Endpoint**: `http://127.0.0.1:8000/mcp`
-- **SSE MCP Endpoint**: `http://127.0.0.1:8000/sse`
-- **Health Check**: `http://127.0.0.1:8000/health`
+- **Streamable HTTP MCP Transport**: `http://127.0.0.1:8000/mcp`
+- **SSE MCP Transport**: `http://127.0.0.1:8000/sse`
 
-#### Step B: Start the Command Center Dashboard (Port 8080)
-In your second terminal:
-```bash
-source .venv/bin/activate
-python -m dashboard.app --host 127.0.0.1 --port 8080
-```
-- **Web UI**: `http://127.0.0.1:8080/`
-- **Dashboard REST API**: `http://127.0.0.1:8080/api/status`
-
-#### Step C: Connect TrueForge CLI (Port 8000)
-In your third terminal:
-```bash
-npx @truefoundry/trueforge@latest
-```
-Configure TrueForge with the Streamable HTTP transport pointing to `http://127.0.0.1:8000/mcp`.
+*(Note: Because `GridMindService` state is process-local, for the interactive human-in-the-loop dashboard workflow, run the unified server on port 8080).*
 
 ---
 
-### 5. First Run Walkthrough
+### 5. Connect TrueForge CLI
+
+In a second terminal:
+```bash
+npx @truefoundry/trueforge@latest
+```
+Configure TrueForge with the Streamable HTTP transport pointing to:
+`http://127.0.0.1:8080/mcp`
+
+---
+
+### 6. First Run Walkthrough
 
 1. Open `http://127.0.0.1:8080` in your browser.
 2. In TrueForge or via MCP client, load the storm scenario:
@@ -243,8 +254,12 @@ With `plan_incident_response`, TrueForge acts as an active initiator of the enti
 1. TrueForge requests incident resolution for the active grid.
 2. Commander orchestrates Operations, Safety, and Planning roles.
 3. Every candidate is sandboxed and stress-tested against thermal and voltage constraints.
-4. An official `AuditRecord` is stored in SQLite under `PENDING_APPROVAL`.
-5. The plan surfaces on the human operator's dashboard with complete evidence and specialist reasoning.
+4. An official `AuditRecord` is stored in SQLite. Depending on grid state and candidate viability, the outcome is recorded as:
+   - `PENDING_APPROVAL`: When a safe, actionable recommendation is found and awaits operator authorization.
+   - `NOMINAL`: When the grid telemetry is already normal and stable with zero violations.
+   - `NO_SAFE_ACTION`: When candidate actions were evaluated, but all failed safety constraint checks.
+   - `ESCALATED`: When complex multi-equipment damage cannot be resolved automatically.
+5. If in `PENDING_APPROVAL`, the plan surfaces on the human operator's dashboard with complete evidence and specialist reasoning.
 
 ---
 
@@ -288,8 +303,8 @@ SC01-B highlights disruption minimization when network rerouting is viable.
 
 ### Scenario BASE: Nominal Grid Telemetry
 
-- **Telemetry**: Grid operates normally at $50.00\text{ Hz}$ with zero violations and all transformers below $75^\circ\text{C}$.
-- **Commander Behavior**: Commander immediately returns status `NOMINAL` and generates no unnecessary actions or false alarms.
+- **Telemetry**: Grid operates stably at nominal frequency ($50.00\text{ Hz}$) with zero active violations, all critical loads fully served ($100\%$), and all transformer temperatures operating within their configured limits (peak unit T04 at $82.65^\circ\text{C}$, well below the $110.0^\circ\text{C}$ limit).
+- **Commander Behavior**: Commander returns status `NOMINAL` with zero operational actions or false alarms.
 
 ---
 
@@ -340,7 +355,7 @@ Automated code reviews by **Qodo** (PR-Agent) and **GitHub Copilot** identified 
 ```
 gridmind/
 ├── dashboard/                  # Command Center web application (FastAPI)
-│   ├── app.py                  # REST API routes, RBAC auth, and event streaming
+│   ├── app.py                  # REST API routes, RBAC auth, mounted MCP, and event streaming
 │   ├── static/                 # CSS styling and frontend JavaScript
 │   └── templates/              # Jinja2 HTML templates (index.html)
 ├── docs/                       # Engineering specifications
@@ -350,7 +365,7 @@ gridmind/
 │   ├── commander.py            # GridMindCommander orchestration & human approval gate
 │   ├── contract.py             # Data transfer models & validation schemas
 │   ├── engine.py               # Deterministic electrical and thermal simulation engine
-│   ├── http_server.py          # Uvicorn HTTP server exposing Streamable HTTP & SSE MCP
+│   ├── http_server.py          # Standalone Uvicorn HTTP server exposing Streamable HTTP & SSE MCP
 │   ├── llm.py                  # LLMClient with graceful degraded-mode fallback
 │   ├── loader.py               # Curated topology & scenario JSON loader
 │   ├── mcp_server.py           # MCPServer registration & 7 tool handlers
